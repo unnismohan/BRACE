@@ -1,0 +1,148 @@
+# =============================================================================
+# ARIA / BRACE RF Runner — ubi9-MICRO runtime (was python:3.13-slim-bookworm)
+# Multi-stage (station pattern): full-UBI9 BUILDER assembles /mnt/rootfs with the RPM DB
+# intact (MICRO-01), then ubi9-MICRO receives ONLY that rootfs — so none of the full-ubi9
+# base bloat (vim-minimal, dnf, base python3.9, curl-minimal) ships → far smaller Medium/Low
+# tail than a single-stage full-ubi9 build.
+#
+# Headed-only (app can't run headless): full Chrome 150 + chromedriver + Xvfb.
+#   Xvfb/xorg-x11-utils come from the public Rocky 9 mirror (1:1 RHEL rebuild, same el9 NVR +
+#   RHEL CVE backports) — NOT in UBI/EPEL, NO subscription. CI/air-gap: mirror to Nexus.
+# Python 3.14 + cp314 dep bumps (numpy/pandas/PyYAML/pydantic/seleniumlibrary; no source compiles).
+# Rules: SEC-03/04/06/09/10, MICRO-01, SEC-11b, SCAN-01/04, REP-01..03.
+# =============================================================================
+ARG BASE_BUILDER=registry.access.redhat.com/ubi9/ubi:latest
+ARG BASE_MICRO=registry.access.redhat.com/ubi9/ubi-micro:latest
+# Chrome-for-Testing Stable. Chrome and chromedriver are pulled from this same
+# version so the pair can never drift out of sync.
+# 2026-08-12: bumped 150.0.7871.24 -> 151.0.7922.77 (current Stable), clearing
+# 736 of 770 scanner findings incl. 103 of 109 CRITICAL. The residual 34 need
+# 151.0.7922.109, which Google has not published to Chrome-for-Testing — recheck
+# when CfT ships .109+ or when 152 reaches Stable.
+ARG CFT_VERSION=151.0.7922.77
+
+# Application version. Stamps the image label AND is passed to the app as
+# BRACE_VERSION, so /health cannot report a different version from the image it
+# is running. Override at build time to match the tag you are pushing:
+#   docker build --build-arg APP_VERSION=2.1.1 -t …/brace-runner-hardened:2.1.1 .
+ARG APP_VERSION=2.1.1
+
+# =============================== STAGE 1 — builder ===============================
+FROM ${BASE_BUILDER} AS builder
+ARG CFT_VERSION
+RUN dnf -y install shadow-utils unzip python3.14 python3.14-pip && dnf clean all
+
+# Rocky 9 repo (public RHEL rebuild) — source for Xvfb + xorg-x11-utils (absent from UBI/EPEL).
+RUN curl -sL -o /etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9 https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9 && \
+    rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9 && \
+    printf '%s\n' \
+      '[rocky9-baseos]'  'name=Rocky9 BaseOS' \
+      'baseurl=https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/' \
+      'enabled=1' 'gpgcheck=1' 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9' \
+      'priority=200' 'exclude=rocky-release* rocky-repos* rocky-gpg-keys* centos-*' \
+      '[rocky9-appstream]' 'name=Rocky9 AppStream' \
+      'baseurl=https://dl.rockylinux.org/pub/rocky/9/AppStream/x86_64/os/' \
+      'enabled=1' 'gpgcheck=1' 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9' \
+      'priority=200' 'exclude=rocky-release* rocky-repos* rocky-gpg-keys* centos-*' \
+      > /etc/yum.repos.d/rocky9.repo
+# UBI repos keep default priority (99) -> win all shared packages; Rocky (priority 200) supplies
+# ONLY its exclusives (Xvfb + X-server deps). rocky-release excluded so redhat-release provides
+# /etc/os-release -> the image identifies as RHEL/el9 and the scanner uses the Red Hat advisory DB.
+
+# MICRO-01: resolve the full runtime closure into /mnt/rootfs (--downloadonly), then
+# rpm --noscripts into it so the RPM DB stays populated (accurate scans). Xvfb from Rocky,
+# everything else from UBI. install_weak_deps=0 keeps the closure lean.
+# tzdata is explicit: install_weak_deps=0 means it is NOT pulled in transitively,
+# and without /usr/share/zoneinfo the TZ environment variable is silently ignored —
+# datetime.now() stays UTC and every timestamp in the UI is wrong for the viewer.
+RUN mkdir -p /mnt/rootfs /tmp/rpms && \
+    dnf -y --installroot=/mnt/rootfs --releasever=9 --setopt=install_weak_deps=0 --nodocs \
+        --downloadonly --downloaddir=/tmp/rpms install \
+        bash python3.14 python3.14-pip ca-certificates shadow-utils git \
+        tzdata \
+        alsa-lib atk at-spi2-atk at-spi2-core cups-libs dbus-libs libdrm mesa-libgbm gtk3 \
+        nspr nss nss-util libX11 libXcomposite libXdamage libXext libXfixes libXrandr libXtst \
+        libxcb libxkbcommon libwayland-client fontconfig freetype \
+        dejavu-sans-fonts dejavu-sans-mono-fonts \
+        && \
+    rpm --root /mnt/rootfs --initdb && \
+    rpm --root /mnt/rootfs --noscripts --nodeps -Uvh /tmp/rpms/*.rpm && \
+    rm -rf /tmp/rpms
+
+# SEC-11b kaniko-safe; post-scriptlet fixups; bare python/pip -> 3.14
+RUN rm -f /mnt/rootfs/usr/bin/newuidmap /mnt/rootfs/usr/bin/newgidmap && \
+    /sbin/ldconfig -r /mnt/rootfs || true && \
+    chroot /mnt/rootfs update-ca-trust extract 2>/dev/null || true && \
+    ln -sf /usr/bin/python3.14 /mnt/rootfs/usr/bin/python3 && ln -sf /usr/bin/python3.14 /mnt/rootfs/usr/bin/python && \
+    ln -sf /usr/bin/pip3.14 /mnt/rootfs/usr/bin/pip3 && ln -sf /usr/bin/pip3.14 /mnt/rootfs/usr/bin/pip
+
+# Trim the build-time-only el9 python3.9 stack -> removes ~33 no-fix Medium + ~9 Low CVEs.
+# WHY post-install --nodeps and NOT dnf --exclude: it's a HARD dep at install time —
+#   Chrome -> nss -> requires /usr/bin/update-crypto-policies -> crypto-policies-scripts -> python3(3.9).
+#   Excluding it makes dnf refuse to resolve (nss can't install). But it's DEAD at runtime:
+#   update-crypto-policies is an admin tool to CHANGE policy; the policy is already baked via the
+#   crypto-policies *data* package (kept), and nss only reads that config. So we let dnf install the
+#   stack to satisfy resolution, then force-remove it here. (app runs on python3.14, untouched.)
+RUN rpm --root /mnt/rootfs -e --nodeps crypto-policies-scripts python3 python3-libs python3-pip-wheel acl 2>/dev/null || true
+
+# full Chrome + matching chromedriver -> rootfs/opt/chromium
+RUN cd /tmp && \
+    curl -sL -o chrome.zip "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VERSION}/linux64/chrome-linux64.zip" && \
+    curl -sL -o cd.zip     "https://storage.googleapis.com/chrome-for-testing-public/${CFT_VERSION}/linux64/chromedriver-linux64.zip" && \
+    unzip -q chrome.zip && unzip -q cd.zip && \
+    mkdir -p /mnt/rootfs/opt/chromium /mnt/rootfs/usr/local/bin && \
+    cp -a chrome-linux64/. /mnt/rootfs/opt/chromium/ && \
+    cp -a chromedriver-linux64/chromedriver /mnt/rootfs/opt/chromium/chromedriver && \
+    chmod 0755 /mnt/rootfs/opt/chromium/chrome /mnt/rootfs/opt/chromium/chromedriver && \
+    ln -sf /opt/chromium/chrome /mnt/rootfs/usr/local/bin/chrome && \
+    ln -sf /opt/chromium/chromedriver /mnt/rootfs/usr/local/bin/chromedriver && \
+    rm -rf /tmp/*.zip /tmp/chrome-linux64 /tmp/chromedriver-linux64
+
+# Python deps -> rootfs site-packages (cp314 wheels incl compiled .so).
+# Version pins (incl the 5 Python-3.14 bumps) live in requirements.txt — no in-Dockerfile patching.
+COPY requirements_optimized.txt /tmp/requirements.txt
+RUN pip3.14 install --no-cache-dir --upgrade pip && \
+    pip3.14 install --no-cache-dir --target=/mnt/rootfs/usr/lib/python3.14/site-packages -r /tmp/requirements.txt && \
+    pip3.14 install --no-cache-dir --no-deps --target=/mnt/rootfs/usr/lib/python3.14/site-packages rpaframework==30.0.0 rpaframework-core && \
+    python3.14 -c "import sys; sys.path.insert(0,'/mnt/rootfs/usr/lib/python3.14/site-packages'); import robot,uvicorn,selenium,pandas,numpy,lxml,pydantic; print('deps import OK — RF',robot.version.VERSION)" && \
+    rm /tmp/requirements.txt && \
+    find /mnt/rootfs/usr/lib/python3.14 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# non-root rfuser (uid 1001), /opt/rf, OpenShift arbitrary-UID (/etc/passwd group-writable)
+RUN groupadd --root /mnt/rootfs -r rfuser && \
+    useradd  --root /mnt/rootfs -r -g rfuser -u 1001 -d /opt/rf -s /bin/bash rfuser && \
+    mkdir -p /mnt/rootfs/opt/rf/results /mnt/rootfs/opt/rf/suites && \
+    chown -R 1001:0 /mnt/rootfs/opt/rf && chmod -R g=rwX /mnt/rootfs/opt/rf && \
+    chmod g+w /mnt/rootfs/etc/passwd
+COPY entrypoint.sh            /mnt/rootfs/usr/local/bin/entrypoint.sh
+COPY entrypoint-controller.sh /mnt/rootfs/usr/local/bin/entrypoint-controller.sh
+COPY controller/ /mnt/rootfs/opt/rf/controller/
+RUN chmod +x /mnt/rootfs/usr/local/bin/entrypoint.sh /mnt/rootfs/usr/local/bin/entrypoint-controller.sh && \
+    chown -R 1001:0 /mnt/rootfs/opt/rf
+
+# =============================== STAGE 2 — micro runtime ===============================
+FROM ${BASE_MICRO}
+# ARGs do not cross stage boundaries — redeclare to use it in this stage.
+ARG APP_VERSION
+LABEL org.opencontainers.image.title="brace-runner-hardened" \
+      org.opencontainers.image.description="BRACE v2 controller + Robot Framework runner on ubi9-micro — Python 3.14 + Chrome + Xvfb" \
+      org.opencontainers.image.vendor="BRACE" \
+      org.opencontainers.image.version="${APP_VERSION}"
+# ubi-micro has /var/run, /var/lock, /var/log as symlinks → /run, /run/lock, /log.
+# BuildKit COPY --from fails when source has real dirs that map onto destination symlinks.
+# Remove symlinks in the destination layer BEFORE copying the builder rootfs over.
+RUN rm -f /var/run /var/lock 2>/dev/null; \
+    mkdir -p /var/run /var/lock
+COPY --from=builder /mnt/rootfs /
+RUN /sbin/ldconfig
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    HOME=/opt/rf LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    DISPLAY=:99 \
+    BRACE_VERSION=${APP_VERSION} \
+    TZ=Asia/Kolkata \
+    CHROME_BIN=/opt/chromium/chrome CHROMEDRIVER=/opt/chromium/chromedriver \
+    PATH=/opt/chromium:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /opt/rf
+USER 1001
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/entrypoint-controller.sh"]

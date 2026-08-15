@@ -1,0 +1,245 @@
+# ═══════════════════════════════════════════════════════════════
+# BRACE RF Controller — Deployment + Service + Route
+# Apply: oc apply -f k8s/deployment.yaml
+# ═══════════════════════════════════════════════════════════════
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brace-rf-controller
+  namespace: brace
+  labels:
+    app: brace-rf-controller
+spec:
+  replicas: 1
+  # Recreate, NOT the default RollingUpdate. With replicas:1 a rolling update
+  # rounds maxSurge up to 1, so a new pod starts while the old one is still
+  # serving. That breaks BRACE three ways:
+  #   * brace-rf-config-pvc is ReadWriteOnce — on a different node the new pod
+  #     cannot attach it and the rollout deadlocks;
+  #   * on the same node both pods open the same SQLite file, and the new pod's
+  #     startup reconciliation cancels the OLD pod's still-executing runs;
+  #   * both pods run APScheduler, so every schedule fires twice.
+  # Recreate costs a few seconds of downtime and avoids all three.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: brace-rf-controller
+  template:
+    metadata:
+      labels:
+        app: brace-rf-controller
+      annotations:
+        # Prometheus scrapes /metrics — queue depth, run outcomes and, most
+        # usefully, brace_results_disk_bytes for an alert before the PVC fills.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Optional. Only needed when the applications under test are not
+      # resolvable by cluster DNS — common in isolated lab environments.
+      # Delete this block entirely if your DNS already resolves them.
+      # hostAliases:
+      #   - ip: "10.0.0.10"
+      #     hostnames:
+      #       - app-under-test.example.local
+      #   - ip: "10.0.0.11"
+      #     hostnames:
+      #       - gitlab.example.com
+
+      containers:
+        - name: rf-controller
+          image: registry.example.com/brace/brace-runner-hardened:2.1.2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+
+          env:
+            - name: HOME
+              value: /tmp
+            - name: SUITES_DIR
+              value: /opt/rf/suites
+            - name: RESULTS_DIR
+              value: /opt/rf/results
+            - name: BSS_ENV
+              value: staging
+            # Surfaced by /health and the startup log — keep in step with the
+            # image tag above so you can confirm which build is actually live.
+            - name: IMAGE_TAG
+              value: "2.1.1"
+            - name: CONFIG_DIR
+              value: /opt/rf/config
+            # ── Execution capacity ──────────────────────────────────────
+            # Max runs admitted at once. Runs beyond this queue.
+            - name: BRACE_MAX_CONCURRENT_RUNS
+              value: "3"
+            # THE limit that matters: total robot processes — i.e. browsers —
+            # in flight across every run. Test cases now execute in parallel
+            # within a run, so this, not the run count, is what sizes the pod:
+            #   2 CPU /  4Gi -> 3   (current)
+            #   4 CPU /  8Gi -> 6
+            #   8 CPU / 16Gi -> 12
+            # Raise this and the resource limits below together, never alone.
+            - name: BRACE_MAX_CONCURRENT_TESTS
+              value: "3"
+            # Cases one run may execute at once, capped by the budget above.
+            # Left equal to it, a lone run uses the whole pod instead of
+            # trickling through one case at a time. Testers can override per run.
+            - name: BRACE_RUN_PARALLEL
+              value: "3"
+            # Kill a single test case after this long so a wedged browser
+            # cannot hold an execution slot and stall the queue.
+            - name: BRACE_TEST_TIMEOUT_SEC
+              value: "1800"
+            # json emits one object per line with run_id/project_id/user fields
+            # so a log stack can index and correlate them. Use "text" for humans.
+            - name: BRACE_LOG_FORMAT
+              value: "json"
+            # The container's own clock. Timestamps are written using local time
+            # and the UI shows them as stored, so an unset TZ means the container
+            # runs in UTC and every time in the UI reads 5h30m behind for an IST
+            # viewer. Keep this equal to BRACE_SCHEDULER_TZ below.
+            - name: TZ
+              value: "Asia/Kolkata"
+            # Cron expressions are read in this zone. Left as UTC it means
+            # "0 2 * * *" fires at 07:30 IST, which surprises people.
+            - name: BRACE_SCHEDULER_TZ
+              value: "Asia/Kolkata"
+            # The pod cannot know the URL users browse to, so without this the
+            # notification emails have no working "open the run" link.
+            # Must be the external Route, not the Service.
+            - name: BRACE_PUBLIC_URL
+              value: "https://brace-rf-dashboard-brace.apps.example.local"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: brace-secret
+                  key: JWT_SECRET
+            - name: BRACE_ENCRYPT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: brace-secret
+                  key: BRACE_ENCRYPT_KEY
+            # Seeds the bootstrap 'admin' password on a fresh database.
+            # Optional: without it the account is created as admin/admin and
+            # must be changed at first login.
+            - name: BRACE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: brace-secret
+                  key: BRACE_ADMIN_PASSWORD
+                  optional: true
+          resources:
+            # Requests are what the scheduler reserves and what protects the pod
+            # from eviction — not the limits. The old 200M request was sized for
+            # an idle controller; with BRACE_MAX_CONCURRENT_TESTS=3 this pod runs
+            # three Chrome instances and routinely uses GBs, so it was both
+            # placeable on a node with no real room and first in line to be
+            # evicted under node memory pressure.
+            # Keep requests roughly in step with steady-state usage at your
+            # configured concurrency; raise both columns together when you raise
+            # BRACE_MAX_CONCURRENT_TESTS.
+            requests:
+              memory: "200Mi"
+              cpu: "200m"
+            limits:
+              memory: "4Gi"     # headroom for Chrome during test runs
+              cpu: "2000m"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+
+          # Startup does schema migrations, orphan reconciliation and schedule
+          # loading against a PVC. Without a startupProbe the liveness probe's
+          # own budget (15s + 3x30s) applies, and a slow volume would get the
+          # pod killed and restarted in a loop that looks like a crash.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 30     # up to 150s to come up
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          volumeMounts:
+            - name: rf-suites
+              mountPath: /opt/rf/suites
+            - name: rf-results
+              mountPath: /opt/rf/results
+            - name: rf-config
+              mountPath: /opt/rf/config
+            - name: dshm
+              mountPath: /dev/shm
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: rf-suites
+          persistentVolumeClaim:
+            claimName: brace-rf-suites-pvc
+        - name: rf-results
+          persistentVolumeClaim:
+            claimName: brace-rf-results-pvc
+        - name: rf-config
+          persistentVolumeClaim:
+            claimName: brace-rf-config-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brace-rf-controller
+  namespace: brace
+spec:
+  selector:
+    app: brace-rf-controller
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+
+---
+# OpenShift Route — exposes dashboard externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: brace-rf-dashboard
+  namespace: brace
+spec:
+  to:
+    kind: Service
+    name: brace-rf-controller
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

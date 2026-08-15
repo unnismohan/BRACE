@@ -1,0 +1,45 @@
+# Keep the build context small. The image only needs:
+#   requirements_optimized.txt, entrypoint*.sh, controller/, agent/, config/, shared/
+# Everything below is excluded — without this the context is ~1.24 GB (mostly
+# saved image tarballs and local test results) to ship a ~1 MB application, and
+# every build pays that cost.
+#
+# NOTE: this is an exclude-list, not an allow-list, so a new source directory
+# still ships by default. Only add entries you are sure the Dockerfile's COPY
+# lines do not need.
+
+# ── Saved container images (~850 MB) ─────────────────────────────
+*.tar
+
+# ── Local development data: SQLite db, synced scripts, run results ──
+local_data/
+
+# ── Version control and editor state ─────────────────────────────
+.git/
+.gitignore
+.vscode/
+.idea/
+.claude/
+
+# ── Docs toolchain (node_modules alone is most of it) ────────────
+docs/
+
+# ── Not used by the runtime image ────────────────────────────────
+k8s/
+alpha-automation-scripts/
+scripts/
+README.md
+docker-compose*.yml
+Dockerfile*
+run_local.ps1
+run_and_push.sh
+requirements.txt
+"requirements_optimized - Copy.txt"
+
+# ── Python / OS noise ────────────────────────────────────────────
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+.DS_Store
+Thumbs.db

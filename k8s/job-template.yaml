@@ -1,0 +1,91 @@
+# ═══════════════════════════════════════════════════════════════
+# BRACE RF Runner — OpenShift Job Template
+# Triggered by: bash k8s/trigger-job.sh <MODULE>
+# Namespace: brace
+# ═══════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: brace-rf-${RUN_ID}
+  namespace: brace
+  labels:
+    app: brace-rf-runner
+    run-id: "${RUN_ID}"
+    module: "${BSS_SERVICE}"
+spec:
+  completions: 1
+  parallelism: 1
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+
+  template:
+    metadata:
+      labels:
+        app: brace-rf-runner
+        run-id: "${RUN_ID}"
+        module: "${BSS_SERVICE}"
+    spec:
+      restartPolicy: Never
+
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: rf-runner
+          image: registry.example.com:5006/tools/brace/rf-runner:1.0
+          imagePullPolicy: Always
+
+          env:
+            - name: RUN_ID
+              value: "${RUN_ID}"
+            - name: RF_SUITE
+              value: "${RF_SUITE}"
+            - name: BSS_ENV
+              value: "${BSS_ENV}"
+            - name: RESULTS_DIR
+              value: /opt/rf/results
+            - name: RF_EXTRA_ARGS
+              value: "${RF_EXTRA_ARGS}"
+
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "3Gi"
+              cpu: "2000m"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: rf-suites
+              mountPath: /opt/rf/suites
+              readOnly: true
+            - name: rf-results
+              mountPath: /opt/rf/results
+            - name: dshm
+              mountPath: /dev/shm
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: rf-suites
+          persistentVolumeClaim:
+            claimName: brace-rf-suites-pvc
+            readOnly: true
+        - name: rf-results
+          persistentVolumeClaim:
+            claimName: brace-rf-results-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir: {}

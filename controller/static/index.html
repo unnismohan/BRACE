@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRACE — RF Test Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/brace.css">
+</head>
+<body>
+
+<!-- TOPBAR -->
+<header id="topbar">
+  <div class="logo">
+    <svg width="28" height="28" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100" height="100" rx="20" fill="#0a2156"/>
+      <rect x="18" y="14" width="9" height="72" rx="4" fill="#ee743b"/>
+      <rect x="27" y="14" width="28" height="9" rx="3" fill="#ee743b"/>
+      <rect x="27" y="45" width="28" height="9" rx="3" fill="#ee743b"/>
+      <rect x="27" y="77" width="28" height="9" rx="3" fill="#ee743b"/>
+      <rect x="55" y="23" width="9" height="22" rx="3" fill="#ee743b"/>
+      <rect x="55" y="54" width="9" height="23" rx="3" fill="#ee743b"/>
+      <line x1="64" y1="18" x2="80" y2="18" stroke="#0099ff" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="82" cy="18" r="5" fill="#0099ff"/>
+      <line x1="64" y1="82" x2="80" y2="82" stroke="#0099ff" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="82" cy="82" r="5" fill="#0099ff"/>
+    </svg>
+    BRACE <span class="badge">v2</span>
+  </div>
+  <span id="env-badge" class="env-badge">staging</span>
+  <div class="spacer"></div>
+  <div class="user-info" id="user-controls" style="display:none">
+    <div class="avatar" id="user-avatar">A</div>
+    <span id="user-display"></span>
+    <button class="btn-topbar" onclick="showModal('modal-changepw')" title="Change password">🔒</button>
+    <button class="btn-topbar" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<!-- MAIN -->
+<div id="app">
+  <!-- Sidebar -->
+  <nav id="sidebar" style="display:none">
+    <div id="sidebar-header">Projects</div>
+    <button id="btn-new-proj" onclick="showModal('modal-newproj')">＋ New Project</button>
+    <nav id="project-nav"></nav>
+    <div class="nav-sep"></div>
+    <div id="help-navitem" class="nav-item" onclick="openHelp()">
+      <span class="ico">📖</span> User Manual
+    </div>
+    <div id="admin-navitem" class="nav-item" onclick="openAdmin()" style="display:none">
+      <span class="ico">⚙️</span> Administration
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <main id="content">
+
+    <!-- LOGIN -->
+    <div id="view-login" class="view active">
+      <!-- Left brand panel -->
+      <div class="login-left">
+        <span class="login-node"></span>
+        <span class="login-node"></span>
+        <span class="login-node"></span>
+        <span class="login-node"></span>
+        <span class="login-node"></span>
+        <div class="login-brand">
+          <div class="login-big-logo">
+            <svg width="110" height="110" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- outer ring -->
+              <circle cx="50" cy="50" r="48" stroke="rgba(0,153,255,0.2)" stroke-width="1"/>
+              <!-- badge background -->
+              <rect x="8" y="8" width="84" height="84" rx="18" fill="url(#lg1)"/>
+              <defs>
+                <linearGradient id="lg1" x1="8" y1="8" x2="92" y2="92" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#0F3278"/>
+                  <stop offset="100%" stop-color="#060d1f"/>
+                </linearGradient>
+              </defs>
+              <!-- B spine -->
+              <rect x="22" y="18" width="9" height="64" rx="4" fill="#ee743b"/>
+              <!-- B top bar -->
+              <rect x="31" y="18" width="24" height="9" rx="3" fill="#ee743b"/>
+              <!-- B mid bar -->
+              <rect x="31" y="45" width="24" height="9" rx="3" fill="#ee743b"/>
+              <!-- B bottom bar -->
+              <rect x="31" y="73" width="24" height="9" rx="3" fill="#ee743b"/>
+              <!-- B top bump -->
+              <rect x="55" y="27" width="9" height="18" rx="3" fill="#ee743b"/>
+              <!-- B bottom bump -->
+              <rect x="55" y="54" width="9" height="19" rx="3" fill="#ee743b"/>
+              <!-- circuit traces -->
+              <line x1="64" y1="22" x2="78" y2="22" stroke="#0099ff" stroke-width="2.5" stroke-linecap="round"/>
+              <line x1="64" y1="77" x2="78" y2="77" stroke="#0099ff" stroke-width="2.5" stroke-linecap="round"/>
+              <!-- circuit nodes -->
+              <circle cx="80" cy="22" r="5" fill="#0099ff"/>
+              <circle cx="80" cy="77" r="5" fill="#0099ff"/>
+              <!-- inner glow -->
+              <rect x="8" y="8" width="84" height="84" rx="18" fill="url(#lg2)"/>
+              <defs>
+                <radialGradient id="lg2" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%" stop-color="rgba(255,255,255,0.07)"/>
+                  <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+                </radialGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="login-title">BRACE</div>
+          <div class="login-subtitle">Robot Framework Automation Control Engine</div>
+          <ul class="login-features">
+            <li>
+              <span class="login-feat-icon">🤖</span>
+              Orchestrate RF test suites across projects and teams
+            </li>
+            <li>
+              <span class="login-feat-icon">▶</span>
+              Unified run engine with live console streaming
+            </li>
+            <li>
+              <span class="login-feat-icon">📊</span>
+              Rich HTML reports with per-TC drill-down
+            </li>
+            <li>
+              <span class="login-feat-icon">🔐</span>
+              Project-level RBAC · Git-sync · Scheduled runs
+            </li>
+          </ul>
+        </div>
+      </div>
+      <!-- Right login panel -->
+      <div class="login-right">
+        <div class="login-card">
+          <div class="login-card-brand">
+            <svg width="32" height="32" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="100" height="100" rx="20" fill="#0F3278"/>
+              <rect x="22" y="18" width="9" height="64" rx="4" fill="#ee743b"/>
+              <rect x="31" y="18" width="24" height="9" rx="3" fill="#ee743b"/>
+              <rect x="31" y="45" width="24" height="9" rx="3" fill="#ee743b"/>
+              <rect x="31" y="73" width="24" height="9" rx="3" fill="#ee743b"/>
+              <rect x="55" y="27" width="9" height="18" rx="3" fill="#ee743b"/>
+              <rect x="55" y="54" width="9" height="19" rx="3" fill="#ee743b"/>
+              <line x1="64" y1="22" x2="78" y2="22" stroke="#0099ff" stroke-width="2.5" stroke-linecap="round"/>
+              <line x1="64" y1="77" x2="78" y2="77" stroke="#0099ff" stroke-width="2.5" stroke-linecap="round"/>
+              <circle cx="80" cy="22" r="5" fill="#0099ff"/>
+              <circle cx="80" cy="77" r="5" fill="#0099ff"/>
+            </svg>
+            <span class="login-card-brand-name">BRACE</span>
+            <span class="login-card-brand-badge">v2</span>
+          </div>
+          <h2>Sign in</h2>
+          <p class="login-desc">Enter your credentials to continue.</p>
+          <div class="asection">
+            <div class="fr"><label>Username</label><input id="li-user" type="text" placeholder="admin" autocomplete="username"></div>
+            <div class="fr"><label>Password</label><input id="li-pass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+            <div id="li-err" class="alert alert-e" style="display:none"></div>
+            <button class="btn btn-p" style="width:100%;margin-top:4px" onclick="doLogin()" id="btn-login">Sign In</button>
+          </div>
+          <div class="login-footer-note">The BRACE authors &nbsp;·&nbsp; © 2026</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div id="view-dashboard" class="view">
+      <div class="page-hdr">
+        <h2>Projects</h2>
+        <div class="spacer"></div>
+        <button class="btn btn-a" id="dash-newbtn" onclick="showModal('modal-newproj')" style="display:none">＋ New Project</button>
+      </div>
+      <div id="proj-cards" class="cards"></div>
+      <div id="no-projects" class="empty" style="display:none"><div class="eico">📁</div><p>No projects yet.</p></div>
+    </div>
+
+    <!-- PROJECT DETAIL -->
+    <div id="view-project" class="view">
+      <div class="bc">
+        <a onclick="showDashboard()">Projects</a>
+        <span class="sep">›</span>
+        <span id="bc-proj"></span>
+      </div>
+      <div class="page-hdr" style="margin-bottom:0">
+        <h2 id="proj-title">—</h2>
+        <div class="spacer"></div>
+        <button class="btn btn-a btn-sm" onclick="openRunModal()">▶ Run</button>
+      </div>
+
+      <div id="proj-tabs">
+        <button class="tab-btn active" onclick="switchTab('scripts')"  id="tabt-scripts">Scripts</button>
+        <button class="tab-btn"        onclick="switchTab('cases')"    id="tabt-cases">Test Cases</button>
+        <button class="tab-btn"        onclick="switchTab('groups')"   id="tabt-groups">Suites</button>
+        <button class="tab-btn"        onclick="switchTab('runs')"     id="tabt-runs">Runs</button>
+        <button class="tab-btn"        onclick="switchTab('reports')"  id="tabt-reports">Reports</button>
+        <button class="tab-btn"        onclick="switchTab('team')"     id="tabt-team" style="display:none">Team</button>
+        <button class="tab-btn"        onclick="switchTab('settings')" id="tabt-settings">Settings</button>
+      </div>
+
+      <!-- SCRIPTS -->
+      <div class="tab-pane active" id="tab-scripts" style="padding-top:8px">
+        <input type="file" id="upload-inp" style="display:none" multiple accept=".robot,.yaml,.yml,.txt,.py,.resource,.csv,.xlsx,.zip" onchange="uploadFiles(this)">
+        <div id="editor-wrap">
+          <!-- File tree sidebar -->
+          <div id="tree-panel">
+            <div id="tree-panel-hdr">
+              <span>Explorer</span>
+              <div id="tree-panel-acts">
+                <button class="tbtn" onclick="promptNewFile()" title="New File">＋</button>
+                <button class="tbtn" onclick="document.getElementById('upload-inp').click()" title="Upload">⬆</button>
+                <button class="tbtn" onclick="gitSync()" title="Git Sync">↻</button>
+                <button class="tbtn" onclick="downloadAllScripts(this)" title="Download all scripts as .zip">⬇</button>
+              </div>
+            </div>
+            <input id="tree-search" placeholder="Search files…" oninput="filterTree(this.value)">
+            <div id="file-tree" oncontextmenu="return showRootMenu(event)"></div>
+          </div>
+          <!-- Editor pane -->
+          <div id="editor-main">
+            <div id="editor-toolbar">
+              <span id="editor-filename" class="editor-no-tab">No file open</span>
+              <div class="spacer"></div>
+              <button class="etbtn ok" id="btn-savefile" onclick="saveFile()" style="display:none">💾 Save</button>
+              <span class="et-sep" id="et-sep1" style="display:none"></span>
+              <button class="etbtn run" id="btn-runfile" onclick="runEditorFile()" style="display:none" title="Run this robot file">▶ Run</button>
+              <span class="et-sep" id="et-sep2" style="display:none"></span>
+              <button class="etbtn" id="btn-newfile" onclick="promptNewFile()" style="display:none">＋ New</button>
+              <button class="etbtn danger" id="btn-delfile" onclick="deleteFile()" style="display:none">🗑</button>
+              <span class="et-sep"></span>
+              <button class="etbtn" onclick="toggleSearchPanel()" title="Search & Replace (Ctrl+H)">🔍</button>
+            </div>
+            <!-- Search & Replace panel -->
+            <div id="sr-panel" style="display:none;background:#252526;border-bottom:1px solid #313244;padding:6px 10px;flex-shrink:0">
+              <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+                <input id="sr-find" placeholder="Find…" style="flex:1;background:#3c3c3c;border:1px solid #555;color:#ccc;padding:3px 8px;border-radius:3px;font-size:12px;outline:none" oninput="srHighlight()" onkeydown="srFindKey(event)">
+                <button class="etbtn" onclick="srPrev()" title="Previous (Shift+Enter)">↑</button>
+                <button class="etbtn" onclick="srNext()" title="Next (Enter)">↓</button>
+                <span id="sr-count" style="font-size:11px;color:#858585;min-width:48px"></span>
+                <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="sr-case" onchange="srHighlight()"> Aa
+                </label>
+                <label style="font-size:11px;color:#aaa;display:flex;align-items:center;gap:4px;cursor:pointer">
+                  <input type="checkbox" id="sr-regex" onchange="srHighlight()"> .*
+                </label>
+                <button class="etbtn danger" onclick="closeSR()" style="padding:2px 8px">✕</button>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="sr-replace" placeholder="Replace…" style="flex:1;background:#3c3c3c;border:1px solid #555;color:#ccc;padding:3px 8px;border-radius:3px;font-size:12px;outline:none" onkeydown="srReplaceKey(event)">
+                <button class="etbtn ok" onclick="srReplaceOne()" style="font-size:11px">Replace</button>
+                <button class="etbtn ok" onclick="srReplaceAll()" style="font-size:11px">Replace All</button>
+              </div>
+            </div>
+            <div id="code-editor">
+              <div id="editor-linenos">1</div>
+              <pre id="editor-pre" aria-hidden="true"></pre>
+              <textarea id="editor-area" spellcheck="false" autocorrect="off" autocapitalize="off"
+                placeholder="Select a file from the tree…"
+                oninput="onEditorInput()" onscroll="syncScroll()" onkeydown="onEditorKey(event)"></textarea>
+            </div>
+            <!-- Excel / CSV grid editor -->
+            <div id="excel-editor">
+              <div id="excel-sheet-tabs"></div>
+              <div id="excel-table-wrap">
+                <table class="xtbl" id="excel-table"></table>
+              </div>
+            </div>
+            <div id="git-log"></div>
+            <div id="qrun-panel" style="display:none;flex-direction:column;border-top:1px solid #313244;flex-shrink:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 10px;background:#181825;font-size:11px;color:#585b70;font-weight:600;letter-spacing:1px;text-transform:uppercase">
+                <span>▶ Run Output</span>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <span id="qrun-status" style="font-size:11px;color:#a6e3a1"></span>
+                  <button class="etbtn" id="btn-qrun-debug" style="display:none;color:#89b4fa;font-weight:700"
+                          onclick="openAIDebug(_qrunLastId, null, _curFile, 'Quick run — ' + (_curFile||''))">🤖 AI Debug</button>
+                  <button class="etbtn danger" style="padding:2px 8px;font-size:11px" onclick="closeQrun()">✕</button>
+                </div>
+              </div>
+              <div id="qrun-console" style="flex:1;overflow-y:auto;font-family:monospace;font-size:12px;padding:8px 12px;background:#11111b;color:#cdd6f4;white-space:pre-wrap;min-height:160px;max-height:280px"></div>
+            </div>
+            <div id="editor-statusbar">
+              <span class="sb-item" id="sb-position">Ln 1, Col 1</span>
+              <span class="sb-item" id="editor-linecount"></span>
+              <div class="spacer"></div>
+              <span class="sb-item" id="sb-lang"></span>
+              <span class="sb-item">UTF-8</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TEST CASES -->
+      <div class="tab-pane" id="tab-cases">
+        <div class="bgrp" style="margin-bottom:12px">
+          <button class="btn btn-p btn-sm" onclick="openNewTCModal()">＋ Add TC</button>
+          <button class="btn btn-o btn-sm" onclick="showModal('modal-bulktc')">⬆ Bulk CSV</button>
+          <button class="btn btn-a btn-sm" id="btn-runsel" onclick="runSelectedTCs()" style="display:none">▶ Run Selected</button>
+        </div>
+        <div class="filterbar">
+          <span class="fb-search">
+            <input id="tc-search" type="text" placeholder="Search name, ID, description or suite path…" oninput="renderTCs()">
+          </span>
+          <span class="fb-group">
+            <label for="tc-status">Status</label>
+            <select id="tc-status" onchange="renderTCs()">
+              <option value="">All</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="never">Never run</option>
+            </select>
+          </span>
+          <span class="fb-group">
+            <label for="tc-tag">Tag</label>
+            <select id="tc-tag" onchange="renderTCs()">
+              <option value="">All</option>
+            </select>
+          </span>
+          <button class="fb-clear" id="tc-clear" onclick="tcClearFilters()" hidden>✕ Clear</button>
+          <span class="fb-count" id="tc-filter-count"></span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th style="width:32px"><input type="checkbox" id="chk-all" onchange="toggleAllTCs(this.checked)"></th>
+              <th style="width:88px">ID</th><th>Name</th><th>Description</th><th style="width:140px">Tags</th><th style="width:110px">Status</th><th style="width:120px">Actions</th>
+            </tr></thead>
+            <tbody id="tc-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- SUITES/GROUPS -->
+      <div class="tab-pane" id="tab-groups">
+        <div class="bgrp" style="margin-bottom:12px;align-items:center">
+          <button class="btn btn-p btn-sm" onclick="showModal('modal-newgrp')">＋ New Suite</button>
+          <span id="grp-toolbar" style="display:none;gap:6px;margin-left:auto">
+            <button class="btn btn-o btn-sm" onclick="expandAllGroups(true)">⊞ Expand All</button>
+            <button class="btn btn-o btn-sm" onclick="expandAllGroups(false)">⊟ Collapse All</button>
+          </span>
+        </div>
+        <div id="groups-list"></div>
+      </div>
+
+      <!-- RUNS -->
+      <div class="tab-pane" id="tab-runs">
+        <div class="bgrp" style="margin-bottom:12px">
+          <button class="btn btn-a btn-sm" onclick="openRunModal()">▶ Trigger Run</button>
+        </div>
+        <div class="filterbar">
+          <span class="fb-search">
+            <input id="runs-search" type="text" placeholder="Search run name or ID…" oninput="renderRuns()">
+          </span>
+          <span class="fb-group">
+            <label for="runs-from">Date</label>
+            <input type="date" id="runs-from" onchange="renderRuns()" aria-label="From date">
+            <span class="fb-sep">→</span>
+            <input type="date" id="runs-to" onchange="renderRuns()" aria-label="To date">
+          </span>
+          <span class="fb-group">
+            <label for="runs-status">Status</label>
+            <select id="runs-status" onchange="renderRuns()">
+              <option value="">All</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="running">Running</option>
+              <option value="queued">Queued</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </span>
+          <span class="fb-group">
+            <label for="runs-user">By</label>
+            <!-- Options are filled from the loaded runs, so 'scheduler' and any
+                 removed user still appear as long as they have run history. -->
+            <select id="runs-user" onchange="renderRuns()">
+              <option value="">Anyone</option>
+            </select>
+          </span>
+          <button class="fb-clear" id="runs-clear" onclick="runsClearFilters()" hidden>✕ Clear</button>
+          <span class="fb-count" id="runs-filter-count"></span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Run ID</th><th>Name</th><th>By</th><th>Status</th><th>Progress</th><th>Started</th><th></th></tr></thead>
+            <tbody id="runs-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- REPORTS -->
+      <div class="tab-pane" id="tab-reports">
+        <!-- Two different questions, so two views. Execution is date-filtered
+             ("how did this week's runs go?"); Coverage is a snapshot of the
+             current inventory ("how much of our suite is actually tested?"),
+             which a date filter would only make misleading. -->
+        <div class="rpt-viewtabs">
+          <button class="rpt-vtab active" data-v="exec" onclick="rptView('exec')">Execution</button>
+          <button class="rpt-vtab" data-v="cov" onclick="rptView('cov')">Coverage</button>
+        </div>
+        <div id="rpt-view-exec">
+        <div class="rpt-datebar">
+          <div class="rpt-date-presets">
+            <button class="rpt-preset active" data-p="today" onclick="rptSetPreset('today')">Today</button>
+            <button class="rpt-preset" data-p="7d" onclick="rptSetPreset('7d')">Last 7 days</button>
+            <button class="rpt-preset" data-p="30d" onclick="rptSetPreset('30d')">Last 30 days</button>
+            <button class="rpt-preset" data-p="all" onclick="rptSetPreset('all')">All time</button>
+          </div>
+          <div class="rpt-date-custom">
+            <input type="date" id="rpt-from" onchange="rptCustomRange()">
+            <span style="color:var(--c-muted);font-size:12px">to</span>
+            <input type="date" id="rpt-to" onchange="rptCustomRange()">
+          </div>
+        </div>
+        <div id="rpt-kpis" class="kpi-grid"></div>
+        <div id="rpt-trend-wrap" class="panel" style="display:none">
+          <div class="panel-hd">
+            <h4>Pass / Fail Trend</h4>
+            <span class="panel-sub" id="rpt-trend-sub"></span>
+          </div>
+          <div id="rpt-trend" class="trend-box"></div>
+        </div>
+        <div class="rpt-cols">
+          <div id="rpt-failing-wrap" class="panel" style="display:none">
+            <div class="panel-hd"><h4>Top Failing Test Cases</h4></div>
+            <div id="rpt-failing"></div>
+          </div>
+          <div id="rpt-flaky-wrap" class="panel" style="display:none">
+            <div class="panel-hd">
+              <h4>Flaky Test Cases</h4>
+              <span class="panel-sub">Passed and failed across runs</span>
+            </div>
+            <div id="rpt-flaky"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd"><h4>Run History</h4></div>
+          <div id="reports-list"></div>
+        </div>
+        </div><!-- /rpt-view-exec -->
+
+        <div id="rpt-view-cov" style="display:none">
+          <div class="cov-note">
+            A snapshot of the whole project, not a date range. Shows how much of what
+            you have is actually being exercised.
+            <span class="cov-stale">
+              Counts a case as stale if it has not run in
+              <input type="number" id="cov-stale-days" min="1" max="365" value="14"
+                     onchange="loadCoverage()"> days
+            </span>
+          </div>
+          <div id="cov-kpis" class="kpi-grid"></div>
+          <div class="panel">
+            <div class="panel-hd">
+              <h4>Test Case Status</h4>
+              <span class="panel-sub">Every case in the project by its latest result</span>
+            </div>
+            <div id="cov-bar"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd">
+              <h4>Script Onboarding</h4>
+              <span class="panel-sub">.robot files on disk vs files linked to a test case</span>
+            </div>
+            <div id="cov-scripts"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd">
+              <h4>Coverage by Suite</h4>
+              <span class="panel-sub">Lowest coverage first</span>
+            </div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Suite</th><th style="width:70px">Cases</th>
+                <th style="width:90px">Executed</th><th style="width:150px">Coverage</th>
+                <th style="width:70px">Pass</th><th style="width:70px">Fail</th>
+                <th style="width:80px">Never</th></tr></thead>
+              <tbody id="cov-suites"></tbody>
+            </table></div>
+          </div>
+          <div class="rpt-cols">
+            <div class="panel">
+              <div class="panel-hd"><h4>Never Executed</h4>
+                <span class="panel-sub">Written but never run</span></div>
+              <div id="cov-never"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-hd"><h4>Stale</h4>
+                <span class="panel-sub">Ran once, not recently</span></div>
+              <div id="cov-stale"></div>
+            </div>
+          </div>
+        </div><!-- /rpt-view-cov -->
+      </div>
+
+      <!-- SETTINGS -->
+      <!-- TEAM ACTIVITY (project_admin only) -->
+      <div class="tab-pane" id="tab-team">
+        <div class="rpt-datebar">
+          <div class="rpt-date-presets">
+            <button class="rpt-preset" data-tp="7d" onclick="teamPreset('7d')">Last 7 days</button>
+            <button class="rpt-preset active" data-tp="30d" onclick="teamPreset('30d')">Last 30 days</button>
+            <button class="rpt-preset" data-tp="90d" onclick="teamPreset('90d')">Last 90 days</button>
+            <button class="rpt-preset" data-tp="all" onclick="teamPreset('all')">All time</button>
+          </div>
+          <div class="rpt-date-custom">
+            <input type="date" id="team-from" onchange="teamCustom()">
+            <span style="color:var(--c-muted);font-size:12px">to</span>
+            <input type="date" id="team-to" onchange="teamCustom()">
+            <button class="btn btn-o btn-sm" onclick="teamExportCSV()">⬇ CSV</button>
+          </div>
+        </div>
+        <div id="team-kpis" class="kpi-grid"></div>
+        <div class="panel">
+          <div class="panel-hd">
+            <h4>Tester Velocity</h4>
+            <span class="panel-sub" id="team-range"></span>
+          </div>
+          <div class="tbl-wrap"><table id="team-table"></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd">
+            <h4>Daily Activity</h4>
+            <span class="panel-sub">runs per day, stacked by tester</span>
+          </div>
+          <div id="team-chart" class="trend-box"></div>
+        </div>
+        <div class="alert alert-i" style="margin-bottom:14px">
+          <b>What these numbers mean.</b> They come from execution records only —
+          runs triggered, tests executed, and machine execution time.
+          <b>Execution time is not time worked</b>: it is how long the runner was busy,
+          including waits while nobody was at a keyboard. Script authoring, debugging and
+          reviewing are not captured at all. Use this to see throughput and coverage
+          trends, not to measure a person's effort.
+        </div>
+      </div>
+
+      <div class="tab-pane" id="tab-settings">
+        <div class="settings-grid">
+
+          <div class="asection">
+            <h3>Project Info</h3>
+            <div class="fr"><label>Name</label><input id="s-name" type="text"></div>
+            <div class="fr"><label>Description</label><textarea id="s-desc" rows="3"></textarea></div>
+            <div class="sec-foot">
+              <button class="btn btn-p btn-sm" onclick="saveProjSettings()">Save</button>
+            </div>
+          </div>
+
+          <div class="asection">
+            <h3>Git Repository</h3>
+            <div class="fr"><label>Repository URL</label><input id="s-giturl" type="text" placeholder="https://gitlab.example.com/group/repo.git"></div>
+            <div class="fgrid">
+              <div class="fr"><label>Branch</label><input id="s-gitbranch" type="text" value="main"></div>
+              <div class="fr"><label>Username</label><input id="s-gituser" type="text"></div>
+            </div>
+            <div class="fr">
+              <label>Token <span style="color:var(--c-muted);font-weight:400">(blank = keep existing)</span></label>
+              <input id="s-gittoken" type="password" placeholder="••••••••">
+            </div>
+            <div class="sec-foot">
+              <button class="btn btn-p btn-sm" onclick="saveGitConfig()">Save Git Config</button>
+              <button class="btn btn-o btn-sm" onclick="switchTab('scripts');gitSync()">↻ Sync Now</button>
+            </div>
+          </div>
+
+          <div class="asection">
+            <div class="sec-hd">
+              <h3>⏰ Schedules</h3>
+              <button class="btn btn-p btn-sm" onclick="openSchedModal()">＋ New Schedule</button>
+            </div>
+            <p class="sec-note">
+              Run a suite automatically on a cron schedule. Times are interpreted in
+              <b id="sched-tz">UTC</b>.
+            </p>
+            <div id="sched-list"></div>
+          </div>
+
+          <div class="asection">
+            <div class="sec-hd"><h3>📧 Notifications</h3></div>
+            <p class="sec-note" id="notify-smtp-warn"></p>
+            <div class="fr">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="nt-enabled" style="width:auto"> Email me about this project
+              </label>
+            </div>
+            <div class="fr">
+              <label>Recipients</label>
+              <textarea id="nt-recipients" rows="2"
+                placeholder="qa-team@company.com, lead@company.com"></textarea>
+              <div class="fhint">Comma, semicolon or newline separated.</div>
+            </div>
+            <div class="fr">
+              <label>Send an email when…</label>
+              <label class="nt-check"><input type="checkbox" id="nt-sched-failed"> A <b>scheduled</b> run fails</label>
+              <label class="nt-check"><input type="checkbox" id="nt-run-failed"> Any run fails</label>
+              <label class="nt-check"><input type="checkbox" id="nt-run-passed"> A run passes <span class="nt-hint">(usually noise)</span></label>
+              <label class="nt-check"><input type="checkbox" id="nt-triggerer"> Also email whoever started the run</label>
+            </div>
+            <div class="fr">
+              <label class="nt-check"><input type="checkbox" id="nt-onchange"> Only when the outcome changes</label>
+              <div class="fhint">Strongly recommended. Without it a suite that has been failing
+                for three weeks emails you every single night, and people stop reading.</div>
+            </div>
+            <div class="fr">
+              <label class="nt-check"><input type="checkbox" id="nt-digest"> Weekly coverage digest</label>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                <input id="nt-digest-cron" type="text" placeholder="0 8 * * 1" style="width:150px">
+                <span class="fhint" id="nt-digest-desc"></span>
+              </div>
+            </div>
+            <div class="bgrp">
+              <button class="btn btn-p btn-sm" onclick="saveNotifyConfig()">Save Notifications</button>
+            </div>
+            <div id="nt-status" style="margin-top:10px;font-size:12.5px"></div>
+          </div>
+
+          <div class="asection danger-zone">
+            <h3>⚠ Danger Zone</h3>
+            <p class="sec-note">
+              Bulk deletion for this project. Permanent. Requires <b>project_admin</b>.
+              Scripts on disk are never touched.
+            </p>
+            <div id="dz-rows"></div>
+          </div>
+
+          <!-- Members last and full-width: the only card that grows without bound -->
+          <div class="asection members-card">
+            <div class="sec-hd">
+              <h3>Members <span class="sec-count" id="mem-count"></span></h3>
+              <div class="bgrp">
+                <span class="fb-search" style="flex:0 1 220px">
+                  <input id="mem-search" type="text" placeholder="Filter members…" oninput="renderMembers()">
+                </span>
+                <button class="btn btn-p btn-sm" onclick="openAddMemberModal()">＋ Add Member</button>
+              </div>
+            </div>
+            <div class="tbl-wrap mem-scroll">
+              <table><thead><tr><th>User</th><th style="width:190px">Role</th><th style="width:110px"></th></tr></thead><tbody id="members-tbody"></tbody></table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div><!-- /view-project -->
+
+    <!-- ADMIN -->
+    <div id="view-admin" class="view">
+      <div class="page-hdr"><h2>Administration</h2></div>
+      <div class="asection">
+        <h3>Users</h3>
+        <div class="bgrp" style="margin-bottom:12px">
+          <button class="btn btn-p btn-sm" onclick="showModal('modal-newuser')">＋ New User</button>
+          <button class="btn btn-o btn-sm" onclick="showModal('modal-bulkusers')">⬆ Bulk CSV</button>
+        </div>
+        <div class="tbl-wrap">
+          <table><thead><tr><th>Username</th><th>Full Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="users-tbody"></tbody></table>
+        </div>
+      </div>
+
+      <div class="asection">
+        <h3>🤖 AI Debug Assistant</h3>
+        <p style="font-size:12.5px;color:var(--c-muted);margin-bottom:14px;max-width:640px">
+          Connect an OpenAI-compatible endpoint (OpenRouter, LiteLLM, vLLM) to diagnose failed runs
+          in-app. When disabled — or on an air-gapped server — users still get a fully-formed
+          debug prompt to copy and run elsewhere.
+        </p>
+        <div style="max-width:560px">
+          <div class="fr">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="ai-enabled" style="width:auto"> Enable in-app AI analysis
+            </label>
+          </div>
+          <div class="fr"><label>API Base URL</label>
+            <input id="ai-base" type="text" placeholder="https://openrouter.ai/api/v1"></div>
+          <div class="fr"><label>Model</label>
+            <input id="ai-model" type="text" placeholder="anthropic/claude-sonnet-4"></div>
+          <div class="fr"><label>API Key <span id="ai-key-hint" style="font-weight:400;color:var(--c-muted)"></span></label>
+            <input id="ai-key" type="password" placeholder="sk-or-v1-… (leave blank to keep current)"></div>
+          <div class="fr">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="ai-verify" style="width:auto" checked> Verify TLS certificate
+            </label>
+            <span style="font-size:11.5px;color:var(--c-muted)">
+              Untick for internal endpoints with a self-signed certificate.
+            </span>
+          </div>
+          <div class="bgrp">
+            <button class="btn btn-p btn-sm" onclick="saveAIConfig()">Save AI Settings</button>
+            <button class="btn btn-o btn-sm" onclick="testAIConfig()">🔌 Test Connection</button>
+          </div>
+          <div id="ai-status" style="margin-top:10px;font-size:12.5px;line-height:1.6"></div>
+        </div>
+      </div>
+
+      <!-- Email / SMTP -->
+      <div class="asection">
+        <h3>📧 Email Notifications</h3>
+        <p style="font-size:12.5px;color:var(--c-muted);margin-bottom:14px;max-width:760px">
+          One SMTP account for the whole server. <b>Who</b> gets emailed about <b>what</b> is set
+          per project, under Project → Settings → Notifications.
+        </p>
+        <div style="max-width:560px">
+          <div class="fr">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="smtp-enabled" style="width:auto"> Enable email sending
+            </label>
+          </div>
+          <div class="fr"><label>Provider</label>
+            <select id="smtp-preset" onchange="applySmtpPreset()">
+              <option value="">— choose to fill in the server details —</option>
+            </select>
+            <div class="fhint" id="smtp-preset-note"></div>
+          </div>
+          <div class="fr"><label>SMTP Host</label>
+            <input id="smtp-host" type="text" placeholder="smtp.gmail.com"></div>
+          <div style="display:flex;gap:10px">
+            <div class="fr" style="flex:0 0 120px"><label>Port</label>
+              <input id="smtp-port" type="number" min="1" max="65535" placeholder="587"></div>
+            <div class="fr" style="flex:1"><label>Security</label>
+              <select id="smtp-security">
+                <option value="starttls">STARTTLS (587)</option>
+                <option value="ssl">SSL/TLS (465)</option>
+                <option value="none">None — internal relay</option>
+              </select></div>
+          </div>
+          <div class="fr"><label>Username</label>
+            <input id="smtp-user" type="text" placeholder="you@gmail.com" autocomplete="off"></div>
+          <div class="fr"><label>Password <span id="smtp-pass-hint" style="font-weight:400;color:var(--c-muted)"></span></label>
+            <input id="smtp-pass" type="password" placeholder="leave blank to keep current" autocomplete="new-password">
+            <div class="fhint" id="smtp-pass-hint2"></div>
+            <div class="fhint">Paste it exactly as shown — spacing in a Google App Password
+              is handled for you.</div></div>
+          <div style="display:flex;gap:10px">
+            <div class="fr" style="flex:1"><label>From Address</label>
+              <input id="smtp-from" type="text" placeholder="brace-noreply@yourdomain.com"></div>
+            <div class="fr" style="flex:0 0 150px"><label>From Name</label>
+              <input id="smtp-fromname" type="text" placeholder="BRACE"></div>
+          </div>
+          <div class="fr">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="smtp-verify" style="width:auto" checked> Verify TLS certificate
+            </label>
+            <span style="font-size:11.5px;color:var(--c-muted)">
+              Untick only for an internal relay with a self-signed certificate.
+            </span>
+          </div>
+          <div class="bgrp">
+            <button class="btn btn-p btn-sm" onclick="saveSmtpConfig()">Save Email Settings</button>
+          </div>
+          <div class="fr" style="margin-top:12px">
+            <label>Send a test email to</label>
+            <div style="display:flex;gap:8px">
+              <input id="smtp-test-to" type="text" placeholder="you@company.com" style="flex:1">
+              <button class="btn btn-o btn-sm" onclick="testSmtpConfig()"
+                      style="white-space:nowrap">✉️ Send Test</button>
+            </div>
+            <div class="fhint">Save first — the test uses the stored settings.</div>
+          </div>
+          <div id="smtp-status" style="margin-top:10px;font-size:12.5px;line-height:1.6"></div>
+          <div id="smtp-url-warn" class="fhint" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- USER MANUAL -->
+    <div id="view-help" class="view">
+      <div class="page-hdr"><h2>📖 BRACE User Manual</h2></div>
+      <div class="help-layout">
+        <aside class="help-toc">
+          <input id="help-search" type="text" placeholder="Search the manual…" oninput="helpSearch(this.value)">
+          <nav id="help-toc-list"></nav>
+        </aside>
+        <article id="help-body"></article>
+      </div>
+    </div>
+
+  </main>
+</div><!-- /app -->
+
+<!-- ══════════════════════
+     MODALS
+══════════════════════ -->
+
+<!-- New Project -->
+<div class="overlay" id="modal-newproj">
+  <div class="modal">
+    <div class="mhdr"><h3>New Project</h3><button class="mclose" onclick="closeModal('modal-newproj')">×</button></div>
+    <div class="fr"><label>Project Name *</label><input id="np-name" type="text" placeholder="BSS Integration Tests"></div>
+    <div class="fr"><label>Description</label><textarea id="np-desc" rows="2"></textarea></div>
+    <hr style="border:none;border-top:1px solid var(--c-border);margin:14px 0">
+    <p style="font-size:11px;font-weight:600;color:var(--c-muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.8px">Git Repository (optional)</p>
+    <div class="fr"><label>Repository URL</label><input id="np-giturl" type="text" placeholder="https://gitlab.example.com/group/repo.git"></div>
+    <div class="fgrid">
+      <div class="fr"><label>Branch</label><input id="np-gitbranch" type="text" value="main"></div>
+      <div class="fr"><label>Username</label><input id="np-gituser" type="text"></div>
+    </div>
+    <div class="fr"><label>Token / Password</label><input id="np-gittoken" type="password"></div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-newproj')">Cancel</button>
+      <button class="btn btn-p" onclick="createProject()">Create Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- New TC -->
+<div class="overlay" id="modal-newtc">
+  <div class="modal">
+    <div class="mhdr"><h3>Add Test Case</h3><button class="mclose" onclick="closeModal('modal-newtc')">×</button></div>
+    <div class="fr"><label>Test Case Name *</label><input id="tc-name" type="text" placeholder="Verify subscriber activation"></div>
+    <div class="fr"><label>Description</label><textarea id="tc-desc" rows="2" placeholder="What this test validates"></textarea></div>
+    <div class="fr" style="position:relative">
+      <label>Suite Path <span style="font-weight:400;color:var(--c-muted)">(relative to scripts dir)</span></label>
+      <input id="tc-suite" type="text" placeholder="Type to search robot files…" autocomplete="off"
+             oninput="filterSuites(this.value)" onfocus="filterSuites(this.value)" onblur="setTimeout(()=>hideSuiteDD(),200)">
+      <div id="suite-dropdown" style="display:none;position:absolute;left:0;right:0;top:100%;
+           background:#fff;border:1.5px solid var(--c-blue);border-radius:0 0 7px 7px;
+           max-height:180px;overflow-y:auto;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,.12)"></div>
+      <div class="fhint">Leave blank to run entire scripts directory</div>
+    </div>
+    <div class="fr"><label>Extra RF Args</label><input id="tc-args" type="text" placeholder="-t 'TC Name'"></div>
+    <div class="fr">
+      <label>Tags</label>
+      <input id="tc-tags" type="text" placeholder="smoke regression upc">
+      <div class="fhint">Space or comma separated. Tags cut across suites, so you can
+        run every @smoke case wherever it lives. Lower-cased automatically.</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-newtc')">Cancel</button>
+      <button class="btn btn-p" id="btn-savetc" onclick="createTC()">Add Test Case</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk TC -->
+<div class="overlay" id="modal-bulktc">
+  <div class="modal">
+    <div class="mhdr"><h3>Bulk Upload Test Cases</h3><button class="mclose" onclick="closeModal('modal-bulktc')">×</button></div>
+    <div class="alert alert-i">
+      CSV columns: <b>name</b>, description, suite_path, extra_args, suite<br>
+      <span style="font-size:11.5px;opacity:.85">
+        <b>suite</b> is optional — the suite is created if it doesn't exist and the
+        test case is added to it. Separate multiple suites with <code>|</code>.
+      </span>
+    </div>
+    <div class="fr" style="margin-top:10px"><label>CSV File</label><input type="file" id="tc-csvfile" accept=".csv"></div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-bulktc')">Cancel</button>
+      <button class="btn btn-p" onclick="bulkUploadTCs()">Upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Suite -->
+<div class="overlay" id="modal-newgrp">
+  <div class="modal">
+    <div class="mhdr"><h3>New Suite</h3><button class="mclose" onclick="closeModal('modal-newgrp')">×</button></div>
+    <div class="fr"><label>Suite Name *</label><input id="grp-name" type="text" placeholder="Regression / Feature / Sprint-42"></div>
+    <div class="fr"><label>Description</label><textarea id="grp-desc" rows="2"></textarea></div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-newgrp')">Cancel</button>
+      <button class="btn btn-p" onclick="createGroup()">Create Suite</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add TCs to Suite -->
+<div class="overlay" id="modal-grptcs">
+  <div class="modal">
+    <div class="mhdr"><h3 id="grptcs-title">Add Test Cases</h3><button class="mclose" onclick="closeModal('modal-grptcs')">×</button></div>
+    <div class="picker-bar">
+      <span class="fb-search" style="flex:1">
+        <input id="grptc-search" type="text" placeholder="Filter by name or ID…" oninput="renderGrpTCList()">
+      </span>
+      <button class="fb-clear" onclick="grpTCSelectAll(true)">Select all</button>
+      <button class="fb-clear" onclick="grpTCSelectAll(false)">Clear</button>
+    </div>
+    <div class="tc-slist" id="grptc-list"></div>
+    <div class="mfoot">
+      <span class="picker-count" id="grptc-count"></span>
+      <button class="btn btn-o" onclick="closeModal('modal-grptcs')">Cancel</button>
+      <button class="btn btn-p" onclick="addTCsToGroup()">Add Selected</button>
+    </div>
+  </div>
+</div>
+
+<!-- Run Modal -->
+<div class="overlay" id="modal-run">
+  <div class="modal">
+    <div class="mhdr"><h3>Trigger Test Run</h3><button class="mclose" onclick="closeModal('modal-run')">×</button></div>
+    <div class="fr"><label>Run Name</label><input id="run-name" type="text" placeholder="Sprint 42 regression"></div>
+    <div class="fr"><label>Mode</label>
+      <select id="run-mode" onchange="onRunModeChange()">
+        <option value="tcs">Selected Test Cases</option>
+        <option value="group">Suite / Group</option>
+        <option value="tag">By Tag</option>
+      </select>
+    </div>
+    <div id="run-tcs-panel">
+      <label style="font-size:12px;font-weight:600;margin-bottom:6px;display:block">Select Test Cases</label>
+      <div class="tc-slist" id="run-tc-list"></div>
+    </div>
+    <div id="run-grp-panel" style="display:none">
+      <div class="fr"><label>Suite</label><select id="run-grp-sel"></select></div>
+    </div>
+    <!-- Tags cut across suites: "every @smoke case, wherever it lives". -->
+    <div id="run-tag-panel" style="display:none">
+      <div class="fr"><label>Tag</label><select id="run-tag-sel"></select></div>
+    </div>
+    <div class="fr"><label>Extra Args</label><input id="run-xargs" type="text" placeholder="--variable ENV:staging"></div>
+    <div class="fr">
+      <label for="run-parallel">Parallel</label>
+      <input id="run-parallel" type="number" min="1" step="1">
+      <!-- Set to 1 when a suite's cases depend on each other's order. -->
+      <div class="fhint" id="run-parallel-hint"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-run')">Cancel</button>
+      <button class="btn btn-a" onclick="triggerRun()">▶ Start Run</button>
+    </div>
+  </div>
+</div>
+
+<!-- Run Detail -->
+<div class="overlay" id="modal-rundetail">
+  <div class="modal modal-lg">
+    <div class="mhdr"><h3 id="rd-title">Run Detail</h3><button class="mclose" onclick="closeRunDetail()">×</button></div>
+    <div id="rd-body"></div>
+    <div style="margin-top:14px"><label style="font-size:12px;font-weight:600">Console Output</label><div id="run-console" class="console-box" style="margin-top:6px"></div></div>
+    <div class="mfoot"><button class="btn btn-o" onclick="closeRunDetail()">Close</button></div>
+  </div>
+</div>
+
+<!-- Report Viewer -->
+<div class="overlay" id="modal-report">
+  <div class="modal modal-xl">
+    <div class="mhdr"><h3 id="rpt-title">Report</h3><button class="mclose" onclick="closeModal('modal-report')">×</button></div>
+    <iframe id="rpt-frame" style="flex:1;border:none;border-radius:8px" src="about:blank"></iframe>
+  </div>
+</div>
+
+<!-- New / edit schedule -->
+<div class="overlay" id="modal-sched">
+  <div class="modal">
+    <div class="mhdr"><h3 id="sched-title">New Schedule</h3><button class="mclose" onclick="closeModal('modal-sched')">×</button></div>
+    <div class="fr"><label>Suite to run</label>
+      <select id="sched-group"></select>
+    </div>
+    <div class="fr">
+      <label>Schedule</label>
+      <div class="sched-presets">
+        <button class="fb-clear" onclick="schedPreset('0 2 * * *')">Daily 02:00</button>
+        <button class="fb-clear" onclick="schedPreset('0 2 * * 1-5')">Weekdays 02:00</button>
+        <button class="fb-clear" onclick="schedPreset('0 */4 * * *')">Every 4 hours</button>
+        <button class="fb-clear" onclick="schedPreset('0 3 * * 0')">Weekly Sun 03:00</button>
+      </div>
+    </div>
+    <div class="fr">
+      <label>Cron expression <span style="font-weight:400;color:var(--c-muted)">minute hour day month weekday</span></label>
+      <input id="sched-cron" type="text" placeholder="0 2 * * *" oninput="schedPreview()"
+             style="font-family:'Consolas',monospace">
+    </div>
+    <div id="sched-preview" class="sched-preview"></div>
+    <div class="fr">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="sched-enabled" style="width:auto" checked> Enabled
+      </label>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-sched')">Cancel</button>
+      <button class="btn btn-p" onclick="saveSchedule()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Test case history -->
+<div class="overlay" id="modal-tchist">
+  <div class="modal modal-lg">
+    <div class="mhdr"><h3 id="tch-title">Test Case History</h3><button class="mclose" onclick="closeModal('modal-tchist')">×</button></div>
+    <div class="mbody">
+      <div id="tch-stats" class="tch-stats"></div>
+      <div id="tch-strip-wrap" style="display:none">
+        <div class="panel-sub" style="margin-bottom:6px">Recent results — oldest left, newest right</div>
+        <div id="tch-strip" class="tch-strip"></div>
+      </div>
+      <div class="tbl-wrap" style="margin-top:14px;max-height:44vh;overflow-y:auto">
+        <table><thead><tr><th>Run</th><th style="width:96px">Result</th><th style="width:96px">Duration</th><th style="width:132px">When</th><th style="width:70px"></th></tr></thead>
+        <tbody id="tch-rows"></tbody></table>
+      </div>
+    </div>
+    <div class="mfoot"><button class="btn btn-o" onclick="closeModal('modal-tchist')">Close</button></div>
+  </div>
+</div>
+
+<!-- AI Debug -->
+<div class="overlay" id="modal-aidebug">
+  <div class="modal modal-xl">
+    <div class="mhdr">
+      <h3>🤖 AI Debug Assistant</h3>
+      <button class="mclose" onclick="closeModal('modal-aidebug')">×</button>
+    </div>
+    <div class="mbody" style="display:flex;flex-direction:column;gap:12px;min-height:0">
+      <div id="aid-meta" class="aid-meta"></div>
+      <div class="aid-tabs">
+        <button class="aid-tab active" id="aid-tab-analyze" onclick="aidSwitch('analyze')">✨ Analyze</button>
+        <button class="aid-tab" id="aid-tab-prompt" onclick="aidSwitch('prompt')">📋 Copy Prompt</button>
+      </div>
+      <div id="aid-pane-analyze" class="aid-pane">
+        <div id="aid-unavailable" class="alert alert-i" style="display:none">
+          AI assistant is not configured on this server. Use <b>Copy Prompt</b> to run the
+          diagnosis on a machine that has model access.
+        </div>
+        <div id="aid-output" class="aid-output"></div>
+      </div>
+      <div id="aid-pane-prompt" class="aid-pane" style="display:none">
+        <div class="aid-prompt-bar">
+          <span class="panel-sub" id="aid-prompt-size"></span>
+          <button class="btn btn-sm btn-p" onclick="aidCopyPrompt()">📋 Copy to clipboard</button>
+          <button class="btn btn-sm btn-o" onclick="aidDownloadPrompt()">⬇ Download .md</button>
+        </div>
+        <textarea id="aid-prompt" class="aid-prompt" readonly spellcheck="false"></textarea>
+      </div>
+    </div>
+    <div class="mfoot"><button class="btn btn-o" onclick="closeModal('modal-aidebug')">Close</button></div>
+  </div>
+</div>
+
+<!-- New User -->
+<div class="overlay" id="modal-newuser">
+  <div class="modal">
+    <div class="mhdr"><h3>New User</h3><button class="mclose" onclick="closeModal('modal-newuser')">×</button></div>
+    <div class="fgrid">
+      <div class="fr"><label>Username *</label><input id="nu-user" type="text"></div>
+      <div class="fr"><label>Password *</label><input id="nu-pass" type="password"></div>
+    </div>
+    <div class="fgrid">
+      <div class="fr"><label>Full Name</label><input id="nu-name" type="text"></div>
+      <div class="fr"><label>Email</label><input id="nu-email" type="email"></div>
+    </div>
+    <div class="fr"><label>System Role</label><select id="nu-role"><option value="user">User</option><option value="admin">Admin</option></select></div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-newuser')">Cancel</button>
+      <button class="btn btn-p" onclick="createUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Users -->
+<div class="overlay" id="modal-bulkusers">
+  <div class="modal">
+    <div class="mhdr"><h3>Bulk Upload Users</h3><button class="mclose" onclick="closeModal('modal-bulkusers')">×</button></div>
+    <div class="alert alert-i">CSV columns: <b>username</b>, <b>password</b>, system_role, full_name, email</div>
+    <div class="fr" style="margin-top:10px"><label>CSV File</label><input type="file" id="bulk-users-file" accept=".csv"></div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-bulkusers')">Cancel</button>
+      <button class="btn btn-p" onclick="bulkUploadUsers()">Upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Member -->
+<div class="overlay" id="modal-addmember">
+  <div class="modal">
+    <div class="mhdr"><h3>Add Members</h3><button class="mclose" onclick="closeModal('modal-addmember')">×</button></div>
+    <div class="picker-bar">
+      <span class="fb-search" style="flex:1">
+        <input id="mem-search" type="text" placeholder="Filter users…" oninput="renderMemPicker()">
+      </span>
+      <button class="fb-clear" onclick="memSelectAll(true)">Select all</button>
+      <button class="fb-clear" onclick="memSelectAll(false)">Clear</button>
+    </div>
+    <div class="tc-slist" id="mem-picker"></div>
+    <div class="fr" style="margin-top:14px"><label>Project Role — applied to everyone selected</label>
+      <select id="mem-role">
+        <option value="viewer">Viewer — read-only</option>
+        <option value="tester">Tester — run tests, manage TCs</option>
+        <option value="project_admin">Project Admin — full control</option>
+      </select>
+    </div>
+    <div class="mfoot">
+      <span class="picker-count" id="mem-count-sel"></span>
+      <button class="btn btn-o" onclick="closeModal('modal-addmember')">Cancel</button>
+      <button class="btn btn-p" onclick="addMember()">Add Selected</button>
+    </div>
+  </div>
+</div>
+
+<!-- Change Password -->
+<div class="overlay" id="modal-changepw">
+  <div class="modal">
+    <div class="mhdr"><h3>Change Password</h3><button class="mclose" onclick="closeModal('modal-changepw')">×</button></div>
+    <div class="fr"><label>Current Password</label><input id="cpw-old" type="password"></div>
+    <div class="fr"><label>New Password</label><input id="cpw-new" type="password"></div>
+    <div class="mfoot">
+      <button class="btn btn-o" onclick="closeModal('modal-changepw')">Cancel</button>
+      <button class="btn btn-p" onclick="changePassword()">Update</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toasts"></div>
+
+<!-- Classic scripts, no modules and no build step (air-gapped runtime).
+     They share one global scope and run in this order — do not reorder. -->
+<script src="/static/js/core.js"></script>
+<script src="/static/js/scripts.js"></script>
+<script src="/static/js/testcases.js"></script>
+<script src="/static/js/runs.js"></script>
+<script src="/static/js/settings.js"></script>
+<script src="/static/js/admin.js"></script>
+<script src="/static/js/ui.js"></script>
+<script src="/static/js/boot.js"></script>
+</body>
+</html>

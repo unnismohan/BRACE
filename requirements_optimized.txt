@@ -1,0 +1,60 @@
+# ═══════════════════════════════════════════════════════════════
+# ARIA RF Runner — Python Dependencies (Python 3.14 / UBI9-micro build)
+# Last reviewed: 2026-06-30
+# NOTE: 5 versions bumped vs the 3.13 build so cp314 wheels exist (no source compiles).
+#       Marked with [py3.14] below. App confirmed it has no hard pin on these.
+# ═══════════════════════════════════════════════════════════════
+
+# Controller API
+# fastapi 0.116+ relaxed starlette constraint to allow 1.x
+fastapi>=0.116.0
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+apscheduler>=3.10.0
+# Explicit, not just via the jose extra: db.py uses Fernet to encrypt git tokens
+# and the AI API key at rest. If it is missing, secrets fall back to plain text.
+cryptography>=42.0.0
+starlette>=1.1.0
+uvicorn[standard]>=0.34.0
+# 0.0.31 fixes CVE-2026-53539, GHSA-wp53, GHSA-pp6c, GHSA-5rvq, GHSA-6jv3, GHSA-vffw + more
+python-multipart==0.0.31
+
+# Core RF
+robotframework==7.1.1
+robotframework-seleniumlibrary==6.8.0   # [py3.14] was 6.7.1 — yanked on public PyPI; 6.8.0 is the public successor (keep 6.7.1 if building off your internal mirror)
+
+# Selenium WebDriver
+selenium==4.27.1
+
+# Robot Framework libraries commonly used by test suites
+robotframework-requests==0.9.7       # RequestsLibrary
+robotframework-databaselibrary==1.4.4  # DatabaseLibrary — used by COM module
+mysql-connector-python==9.3.0          # mysql.connector — used by Mediation module
+PyMySQL==1.1.1                         # pymysql — pure Python MySQL client
+paramiko==3.5.1                        # SSH/SFTP — used by Mediation module
+
+# BSS agent dependencies
+pika==1.3.2                     # RabbitMQ (stable, no CVEs)
+pydantic>=2.12                  # [py3.14] was 2.11.5 — needs >=2.12 for the cp314 pydantic-core wheel
+requests==2.33.0                # HTTP — fixes CVE-2024-35195, CVE-2024-47081, CVE-2026-25645 (GHSA-gc5v/9hjg)
+PyYAML==6.0.3                   # [py3.14] was 6.0.2 — 6.0.3 has the cp314 wheel
+python-gitlab==4.13.0           # GitLab MR comments
+jinja2==3.1.6                   # report templates — fixes CVE-2024-56326
+tenacity==9.1.2                 # retry logic
+
+# RF result parsing
+lxml==6.1.0                     # 6.1.0 fixes GHSA-vfmq-68hx-4jfw + CVE-2026-41066
+
+# Excel + data processing (for data-driven suites)
+openpyxl==3.1.5
+pandas==3.0.3                   # [py3.14] was 2.2.3 — only 3.0.x ships cp314 wheels (MAJOR bump — validate Excel/data code)
+numpy==2.5.0                    # [py3.14] was 2.2.3 — 2.5.0 has the cp314 wheel
+
+# CSV Library for RF
+robotframework-csvlibrary==0.0.5
+robotframework-jsonlibrary==0.5
+oracledb==4.0.1
+
+# Utilities
+python-dateutil==2.9.0
+pytz==2025.2

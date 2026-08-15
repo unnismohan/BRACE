@@ -1,0 +1,48 @@
+# ─── Local runtime data ────────────────────────────────────────────
+# The SQLite database holds user accounts, password hashes and encrypted
+# git tokens. Results hold whatever your tests logged. Neither belongs in
+# version control, and both are recreated automatically.
+#
+# The example suite IS committed, so a fresh clone has something to run —
+# hence the step-by-step negation (git cannot re-include a file whose
+# parent directory is excluded).
+# Scripts live under suites/<project_id>/ — the example belongs to the first
+# project a fresh install creates (id 1).
+local_data/*
+!local_data/suites/
+local_data/suites/*
+!local_data/suites/1/
+local_data/suites/1/*
+!local_data/suites/1/example/
+*.db
+*.db-wal
+*.db-shm
+
+# ─── Secrets ───────────────────────────────────────────────────────
+# k8s/secret.template.yaml is a template and IS committed.
+# A filled-in copy is not.
+k8s/secret.yaml
+k8s/brace-secret.yaml
+*.secret.yaml
+.env
+.env.*
+
+# ─── Container images / build output ───────────────────────────────
+*.tar
+*.tar.gz
+
+# ─── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Editors / OS ──────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

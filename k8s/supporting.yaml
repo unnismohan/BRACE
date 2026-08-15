@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════════
+# BRACE — Supporting OpenShift Manifests
+# Apply once: oc apply -f k8s/supporting.yaml
+# Namespace: brace (existing)
+# ═══════════════════════════════════════════════════════════════
+
+# ── PVC: RF Suites ───────────────────────────────────────────
+# Stores Robot Framework .robot files + test data
+# RWX so sync pod and Job pod can both mount
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: brace-rf-suites-pvc
+  namespace: brace
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# ── PVC: RF Results ──────────────────────────────────────────
+# Job writes output.xml + report.html here per run-id subdir
+# Agent 1 reads from here after Job completes
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: brace-rf-results-pvc
+  namespace: brace
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# ── PVC: RF Config (SQLite DB) ───────────────────────────────
+# Stores brace.db — users, projects, schedules (RWO is fine, one pod)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: brace-rf-config-pvc
+  namespace: brace
+spec:
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 512Mi

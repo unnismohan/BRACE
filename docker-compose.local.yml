@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  brace:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimized
+      args:
+        # Keeps /health honest locally too — without it the build falls back to
+        # the Dockerfile's ARG default.
+        APP_VERSION: "2.1.1-local"
+    image: brace-local:dev
+    container_name: brace-local
+    ports:
+      - "8080:8080"
+    environment:
+      HOME:         /tmp
+      CONFIG_DIR:   /opt/rf/config
+      SUITES_DIR:   /opt/rf/suites
+      RESULTS_DIR:  /opt/rf/results
+      BSS_ENV:      local
+      IMAGE_TAG:    local-dev
+      JWT_SECRET:   local-dev-secret-change-me
+      # A real key, not blank. Blank means git tokens AND the SMTP password are
+      # written to local_data/config/brace.db in PLAIN TEXT — and a Gmail App
+      # Password is a real credential even on a laptop.
+      # Local-development value only; production uses the one in brace-secret.
+      # Override with:  BRACE_ENCRYPT_KEY=... docker compose -f ... up
+      BRACE_ENCRYPT_KEY: "${BRACE_ENCRYPT_KEY:-PrS9nJT_KZJsyrzv4lIqqUfj6xIMN0kavbeYz95Gi4Y=}"
+      # Deliberately low so queueing is easy to observe on a laptop.
+      # Production uses 3 (see k8s/deployment.yaml).
+      BRACE_MAX_CONCURRENT_RUNS: "2"
+      # Total robot processes (browsers) across all runs — the real resource
+      # limit now that cases inside a run execute in parallel.
+      BRACE_MAX_CONCURRENT_TESTS: "2"
+      BRACE_RUN_PARALLEL: "2"
+      # Short so a hung test is visibly killed during testing; prod uses 1800.
+      BRACE_TEST_TIMEOUT_SEC: "300"
+      # The container's own clock. Without this the container runs in UTC while
+      # you read the UI in IST, so every timestamp looks 5h30m behind.
+      TZ: "Asia/Kolkata"
+      # Match k8s so cron expressions mean the same thing here as in prod.
+      # Left unset this defaults to UTC, and an IST "0 2 * * *" would fire at
+      # 07:30 local — schedules would test fine and then misbehave deployed.
+      BRACE_SCHEDULER_TZ: "Asia/Kolkata"
+      # Used for the "open the run" link in notification emails.
+      BRACE_PUBLIC_URL: "http://localhost:8080"
+      # k8s runs "json"; keep that here so the JSON log path is exercised
+      # locally too. Switch to "text" when tailing logs by eye.
+      BRACE_LOG_FORMAT: "json"
+      # RMQ not needed locally unless testing agent1
+      RMQ_HOST:     localhost
+      RMQ_PORT:     "5672"
+      RMQ_VHOST:    /
+      RMQ_USER:     guest
+      RMQ_PASSWORD: guest
+    volumes:
+      - ./local_data/config:/opt/rf/config
+      - ./local_data/suites:/opt/rf/suites
+      - ./local_data/results:/opt/rf/results
+    restart: unless-stopped
