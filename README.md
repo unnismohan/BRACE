@@ -44,7 +44,14 @@ message bus to operate.
 
 ## Screens
 
-> *Screenshots welcome — open a merge request.*
+<!-- Relative paths, so these render on GitHub, on GitLab and in an offline
+     clone. Drop the PNGs into docs/images/ and they appear automatically.
+     See docs/images/README.md for what to capture. -->
+
+|  |  |
+|---|---|
+| ![Runs](docs/images/runs.png)<br>**Runs** — live progress, filter by name, date, status or who started it | ![Failure detail](docs/images/failure.png)<br>**Why it failed** — the failing keyword, Robot's message and the screenshot, without opening `log.html` |
+| ![Coverage](docs/images/coverage.png)<br>**Coverage** — how much of the suite has ever actually run | ![Editor](docs/images/editor.png)<br>**Scripts** — file tree and editor, with Git sync |
 
 ---
 
