@@ -24,8 +24,8 @@ ARG CFT_VERSION=151.0.7922.77
 # Application version. Stamps the image label AND is passed to the app as
 # BRACE_VERSION, so /health cannot report a different version from the image it
 # is running. Override at build time to match the tag you are pushing:
-#   docker build --build-arg APP_VERSION=2.1.1 -t …/brace-runner-hardened:2.1.1 .
-ARG APP_VERSION=2.1.1
+#   docker build --build-arg APP_VERSION=2.1.3 -t …/brace-runner-hardened:2.1.3 .
+ARG APP_VERSION=2.1.3
 
 # =============================== STAGE 1 — builder ===============================
 FROM ${BASE_BUILDER} AS builder

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
@@ -86,7 +86,7 @@ RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/opt/rf/results"))
 # BRACE_VERSION from its APP_VERSION build arg, which also stamps the image
 # label, so /health and the image can never disagree. The literal below is only
 # the fallback for running outside the container.
-APP_VERSION = os.getenv("BRACE_VERSION", "").strip() or "2.1.1"
+APP_VERSION = os.getenv("BRACE_VERSION", "").strip() or "2.1.3"
 
 BSS_ENV     = os.getenv("BSS_ENV",    "staging")
 IMAGE_TAG   = os.getenv("IMAGE_TAG",  "unknown")
@@ -1930,6 +1930,23 @@ def _norm_tags(raw: str) -> str:
     return f",{','.join(out)}," if out else ""
 
 
+def _db_write(statements: list) -> None:
+    """Run (sql, params) pairs in one transaction. Blocking — call via to_thread.
+
+    SQLite waits up to busy_timeout for a lock. Executed directly inside an
+    async function that wait is spent on the event loop, so with several tests
+    finishing at once the whole server stops answering — including /health,
+    which used to get the pod restarted mid-run.
+    """
+    conn = get_db()
+    try:
+        for sql, params in statements:
+            conn.execute(sql, params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Optional[str],
                         run_dir: Path, suites_dir: Path, tally: dict) -> Optional[str]:
     """Execute one test case. Returns its output.xml path, or None.
@@ -1951,13 +1968,9 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
             return None
 
         item_dir.mkdir(parents=True, exist_ok=True)
-        conn = get_db()
-        conn.execute(
+        await asyncio.to_thread(_db_write, [(
             "UPDATE test_run_items SET rf_run_id=?, status='running', started_at=? WHERE id=?",
-            (rf_run_id, datetime.now().isoformat(), item_id),
-        )
-        conn.commit()
-        conn.close()
+            (rf_run_id, datetime.now().isoformat(), item_id))])
 
         suite_path = tc.get("suite_path")
         target = suites_dir / suite_path if suite_path else suites_dir
@@ -2034,18 +2047,14 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
         except Exception as exc:                       # noqa: BLE001 — cosmetic
             log.debug("Could not extract failure detail for %s: %s", rf_run_id, exc)
 
-    conn = get_db()
-    conn.execute(
-        "UPDATE test_run_items SET status=?, finished_at=?, fail_summary=?,"
-        " fail_detail=?, fail_screenshot=? WHERE id=?",
-        (status, datetime.now().isoformat(), fail_summary, fail_detail, fail_shot, item_id),
-    )
-    conn.execute(
-        "UPDATE test_cases SET last_run_status=?, last_run_at=? WHERE id=?",
-        (status, datetime.now().isoformat(), tc["id"]),
-    )
-    conn.commit()
-    conn.close()
+    now = datetime.now().isoformat()
+    await asyncio.to_thread(_db_write, [
+        ("UPDATE test_run_items SET status=?, finished_at=?, fail_summary=?,"
+         " fail_detail=?, fail_screenshot=? WHERE id=?",
+         (status, now, fail_summary, fail_detail, fail_shot, item_id)),
+        ("UPDATE test_cases SET last_run_status=?, last_run_at=? WHERE id=?",
+         (status, now, tc["id"])),
+    ])
 
     # cancel_run removes the entry, so don't assume it is still there
     if run_id in _active_runs:
@@ -3736,9 +3745,19 @@ def metrics():
 
 @app.get("/health")
 def health():
-    # Public (k8s probes hit this unauthenticated) — so it must not enumerate
-    # tenant data. Project/user counts moved to /api/health-detail.
-    get_db().close()                      # cheap DB liveness check
+    """Liveness: is this process still serving? Nothing else.
+
+    This deliberately does NOT touch the database. It used to, and under load
+    that was actively harmful: with several tests executing, SQLite gets
+    contended, get_db() can raise 'database is locked', /health returns 500,
+    and the kubelet kills the pod — destroying every run in flight over a
+    condition that would have cleared itself in a second.
+
+    A liveness probe should only answer "is this wedged beyond recovery?".
+    Anything that can fail transiently belongs in readiness, below.
+
+    Public (probes hit it unauthenticated), so it must not expose tenant data.
+    """
     return {
         "status":    "ok",
         "version":   APP_VERSION,
@@ -3746,6 +3765,26 @@ def health():
         "pod_name":  POD_NAME,
         "image_tag": IMAGE_TAG,
     }
+
+
+@app.get("/health/ready")
+def health_ready(response: Response):
+    """Readiness: can this pod actually serve requests right now?
+
+    Checks the database, but reports 503 rather than raising — readiness only
+    removes the pod from the Service, it never restarts it. With replicas: 1
+    that briefly returns 503 to the route, which is the correct, recoverable
+    behaviour when the DB is momentarily busy.
+    """
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+    except Exception as exc:               # noqa: BLE001 — reported, not raised
+        log.warning("Readiness check failed: %s", exc)
+        response.status_code = 503
+        return {"status": "degraded", "detail": str(exc)[:200]}
+    return {"status": "ok", "tests_running": len(_active_procs)}
 
 
 @app.get("/api/run-config")
