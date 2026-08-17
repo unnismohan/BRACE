@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRACE — self-hosted test management for Robot Framework</title>
+<meta name="description" content="Projects, suites, parallel runs, scheduling, reports and email alerts for Robot Framework. One container, no external database, works air-gapped.">
+
+<!-- Open Graph: what shows up when the link is pasted into Slack or a tweet. -->
+<meta property="og:title" content="BRACE — self-hosted test management for Robot Framework">
+<meta property="og:description" content="Projects, suites, parallel runs, scheduling, reports and email alerts. One container, no external database, works air-gapped.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="images/runs.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<!-- No webfonts, no CDN, no analytics: the page loads from this repo alone,
+     which is the same constraint the product itself is built under. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230F3278'/><rect x='22' y='18' width='9' height='64' rx='4' fill='%23ee743b'/><rect x='31' y='18' width='24' height='9' rx='3' fill='%23ee743b'/><rect x='31' y='45' width='24' height='9' rx='3' fill='%23ee743b'/><rect x='31' y='73' width='24' height='9' rx='3' fill='%23ee743b'/></svg>">
+
+<style>
+:root{
+  --brand:#0F3278; --brand-d:#0a2156; --accent:#ee743b; --blue:#0099ff;
+  --bg:#ffffff; --bg-alt:#f4f6fb; --card:#ffffff; --border:#dde3ef;
+  --text:#1a2340; --muted:#5b6a89; --ok:#15803d; --code-bg:#0d1526;
+  --radius:10px; --maxw:1080px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0b1020; --bg-alt:#111830; --card:#141c33; --border:#243055;
+    --text:#e6ebf7; --muted:#9aa8c7; --ok:#4ade80; --code-bg:#070c18;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+a{color:var(--blue)}
+h1,h2,h3{line-height:1.25; text-wrap:balance; margin:0}
+
+/* ── Header ── */
+header{border-bottom:1px solid var(--border); background:var(--bg); position:sticky; top:0; z-index:10}
+.hbar{display:flex; align-items:center; gap:14px; height:60px}
+.logo{display:flex; align-items:center; gap:9px; font-weight:800; letter-spacing:.5px;
+      color:var(--text); text-decoration:none; font-size:17px}
+.hbar nav{margin-left:auto; display:flex; gap:20px; align-items:center; font-size:14px}
+.hbar nav a{color:var(--muted); text-decoration:none}
+.hbar nav a:hover{color:var(--text)}
+@media(max-width:640px){ .hbar nav a.hide-sm{display:none} }
+
+/* ── Hero ── */
+.hero{padding:64px 0 44px; text-align:center}
+.hero h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.5px}
+.hero .tag{color:var(--accent); font-weight:700; font-size:13px; letter-spacing:1.6px;
+           text-transform:uppercase; margin-bottom:14px}
+.hero p.lead{font-size:clamp(16px,2.2vw,19px); color:var(--muted); max-width:660px;
+             margin:16px auto 0}
+.cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-top:28px}
+.btn{display:inline-block; padding:11px 22px; border-radius:8px; font-weight:600;
+     font-size:15px; text-decoration:none; border:1.5px solid transparent}
+.btn-p{background:var(--accent); color:#fff}
+.btn-p:hover{background:#d8622c}
+.btn-o{border-color:var(--border); color:var(--text)}
+.btn-o:hover{border-color:var(--blue); color:var(--blue)}
+.badges{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:22px;
+        font-size:12px; color:var(--muted)}
+.badges span{border:1px solid var(--border); border-radius:20px; padding:3px 11px}
+
+/* ── Shot ── */
+.shot{margin:40px auto 0; max-width:960px}
+.shot img{width:100%; height:auto; display:block; border:1px solid var(--border);
+          border-radius:var(--radius); box-shadow:0 12px 40px rgba(10,20,60,.16)}
+
+/* ── Sections ── */
+section{padding:56px 0; border-top:1px solid var(--border)}
+section.alt{background:var(--bg-alt)}
+section h2{font-size:26px; margin-bottom:10px}
+section .sub{color:var(--muted); margin:0 0 30px; max-width:680px}
+
+.grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(255px,1fr)); gap:18px}
+.card{background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
+      padding:18px 20px}
+.card h3{font-size:15px; margin-bottom:6px}
+.card p{margin:0; font-size:14px; color:var(--muted)}
+
+/* ── Code ── */
+pre{background:var(--code-bg); color:#dbe4f5; padding:16px 18px; border-radius:var(--radius);
+    overflow-x:auto; font-size:13.5px; line-height:1.6; margin:0;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+pre .c{color:#7f8db3}
+pre .p{color:#ee9a6b}
+
+/* ── Screens ── */
+.screens{display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:22px}
+.screens figure{margin:0}
+.screens img{width:100%; height:auto; display:block; border:1px solid var(--border);
+             border-radius:8px}
+.screens figcaption{font-size:13.5px; color:var(--muted); margin-top:9px}
+.screens b{color:var(--text)}
+
+/* ── Footer ── */
+footer{border-top:1px solid var(--border); padding:30px 0 44px; font-size:13.5px;
+       color:var(--muted)}
+footer a{color:var(--muted)}
+.fl{display:flex; gap:18px; flex-wrap:wrap; margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hbar">
+    <a class="logo" href="#top">
+      <svg width="26" height="26" viewBox="0 0 100 100" aria-hidden="true">
+        <rect width="100" height="100" rx="20" fill="#0F3278"/>
+        <rect x="22" y="18" width="9" height="64" rx="4" fill="#ee743b"/>
+        <rect x="31" y="18" width="24" height="9" rx="3" fill="#ee743b"/>
+        <rect x="31" y="45" width="24" height="9" rx="3" fill="#ee743b"/>
+        <rect x="31" y="73" width="24" height="9" rx="3" fill="#ee743b"/>
+        <rect x="55" y="27" width="9" height="18" rx="3" fill="#ee743b"/>
+        <rect x="55" y="54" width="9" height="19" rx="3" fill="#ee743b"/>
+        <circle cx="80" cy="22" r="5" fill="#0099ff"/>
+        <circle cx="80" cy="77" r="5" fill="#0099ff"/>
+      </svg>
+      BRACE
+    </a>
+    <nav>
+      <a href="#features" class="hide-sm">Features</a>
+      <a href="#start">Quick start</a>
+      <a href="#screens" class="hide-sm">Screens</a>
+      <a href="https://github.com/unnismohan/BRACE">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <div class="wrap hero">
+    <div class="tag">Open source · Apache-2.0</div>
+    <h1>Test management for Robot&nbsp;Framework</h1>
+    <p class="lead">
+      Robot Framework runs your tests. BRACE gives your team everything around
+      them — projects, suites, parallel execution, scheduling, reports and
+      alerts. One container, no external database, and it works air-gapped.
+    </p>
+    <div class="cta">
+      <a class="btn btn-p" href="#start">Get started</a>
+      <a class="btn btn-o" href="https://github.com/unnismohan/BRACE">View on GitHub</a>
+    </div>
+    <div class="badges">
+      <span>Apache-2.0</span><span>Self-hosted</span><span>Single container</span>
+      <span>SQLite — no external DB</span><span>Air-gap friendly</span>
+    </div>
+    <div class="shot">
+      <img src="images/runs.png" alt="The BRACE runs list, showing a suite executing with live progress">
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="sub">
+        The things every team ends up building by hand once they run Robot
+        Framework at any scale.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3>Parallel execution</h3>
+          <p>Cases inside a run execute concurrently against a global browser
+             budget, so a 44-case suite finishes in minutes without OOM-killing
+             the pod.</p>
+        </div>
+        <div class="card">
+          <h3>Failure summaries inline</h3>
+          <p>The failing keyword, Robot's own message and the screenshot, pulled
+             from <code>output.xml</code> — no opening log.html to find the red line.</p>
+        </div>
+        <div class="card">
+          <h3>Re-run only what failed</h3>
+          <p>Three cases instead of forty-four, named as a retry and linked back
+             to the run it came from.</p>
+        </div>
+        <div class="card">
+          <h3>Scheduling</h3>
+          <p>Cron per suite, with a live preview of the next fire times in your
+             timezone — validated before you can save it.</p>
+        </div>
+        <div class="card">
+          <h3>Coverage reporting</h3>
+          <p>How much of your suite has <em>ever</em> actually run, which scripts
+             were never onboarded, and which cases have gone stale.</p>
+        </div>
+        <div class="card">
+          <h3>Email notifications</h3>
+          <p>One mail per run, and only when the outcome changes — so a suite
+             that has been red for weeks does not mail you nightly.</p>
+        </div>
+        <div class="card">
+          <h3>Projects and roles</h3>
+          <p>Viewer, tester and project admin, enforced per request. Git sync per
+             project, tokens encrypted at rest.</p>
+        </div>
+        <div class="card">
+          <h3>Built for locked-down networks</h3>
+          <p>No CDN, no npm build step, no outbound calls at runtime. Prometheus
+             metrics at <code>/metrics</code> when you want them.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start" class="alt">
+    <div class="wrap">
+      <h2>Quick start</h2>
+      <p class="sub">Docker is the only prerequisite.</p>
+      <pre><span class="c"># clone and run</span>
+git clone https://github.com/unnismohan/BRACE.git &amp;&amp; cd BRACE
+docker compose -f docker-compose.local.yml up -d --build</pre>
+      <p style="margin-top:18px; color:var(--muted); font-size:14.5px">
+        Open <b>http://localhost:8080</b> and sign in as
+        <code>admin</code> / <code>admin</code>. An example project ships with the
+        repo — one passing suite and one that fails on purpose — so you can see
+        failure summaries and re-run-failed without writing anything first.
+      </p>
+      <p style="margin-top:10px; font-size:14.5px">
+        For Kubernetes, sizing and configuration, see the
+        <a href="https://github.com/unnismohan/BRACE#readme">README</a>.
+      </p>
+    </div>
+  </section>
+
+  <section id="screens">
+    <div class="wrap">
+      <h2>Screens</h2>
+      <p class="sub">Running against the bundled example project.</p>
+      <div class="screens">
+        <figure>
+          <img src="images/failure.png" alt="Run detail showing why a test case failed">
+          <figcaption><b>Why it failed</b> — the failing keyword and message, in the
+            run detail, without opening the Robot log.</figcaption>
+        </figure>
+        <figure>
+          <img src="images/coverage.png" alt="Coverage report">
+          <figcaption><b>Coverage</b> — how much of the suite has ever run, what was
+            never onboarded, and what has gone stale.</figcaption>
+        </figure>
+        <figure>
+          <img src="images/editor.png" alt="Script editor with file tree">
+          <figcaption><b>Scripts</b> — file tree and editor over your
+            <code>.robot</code> files, with Git sync.</figcaption>
+        </figure>
+        <figure>
+          <img src="images/runs.png" alt="Runs list">
+          <figcaption><b>Runs</b> — live progress, filtered by name, date, status
+            or who started it.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap">
+      <h2>Contributing</h2>
+      <p class="sub">
+        Issues and merge requests are welcome. The project is deliberately small
+        and dependency-light — worth reading the contributing guide first, as a
+        couple of the constraints are unusual (no build step, single worker).
+      </p>
+      <div class="cta" style="justify-content:flex-start">
+        <a class="btn btn-o" href="https://github.com/unnismohan/BRACE/blob/main/CONTRIBUTING.md">Contributing guide</a>
+        <a class="btn btn-o" href="https://github.com/unnismohan/BRACE/issues">Issues</a>
+        <a class="btn btn-o" href="https://github.com/unnismohan/BRACE/blob/main/SECURITY.md">Security policy</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="fl">
+      <a href="https://github.com/unnismohan/BRACE">GitHub</a>
+      <a href="https://github.com/unnismohan/BRACE#readme">Documentation</a>
+      <a href="https://github.com/unnismohan/BRACE/blob/main/LICENSE">Apache-2.0</a>
+      <a href="https://robotframework.org">Robot Framework</a>
+    </div>
+    BRACE is not affiliated with or endorsed by the Robot Framework Foundation.
+  </div>
+</footer>
+
+</body>
+</html>

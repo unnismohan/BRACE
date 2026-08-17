@@ -13,6 +13,8 @@ Built for environments where a hosted SaaS is not an option, including
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+**[Project site and screenshots →](https://unnismohan.github.io/BRACE/)**
+
 ---
 
 ## Why
