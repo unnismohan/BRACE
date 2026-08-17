@@ -28,11 +28,65 @@ async function api(method, path, body, isForm) {
   const opts = { method, headers: _token ? { Authorization: `Bearer ${_token}` } : {} };
   if (body && !isForm) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   else if (isForm) opts.body = body;
-  const r = await fetch('/api' + path, opts);
-  if (r.status === 401) { logout(); return; }
-  if (!r.ok) { const e = await r.json().catch(() => ({ detail: r.statusText })); throw new Error(e.detail || r.statusText); }
+
+  let r;
+  try {
+    r = await fetch('/api' + path, opts);
+  } catch (netErr) {
+    // fetch only rejects for network-level failures — server down, DNS, offline.
+    throw new Error('Cannot reach the BRACE server. Check your connection, '
+                  + 'and that the service is still running.');
+  }
+
+  // A 401 means two completely different things depending on where it came from,
+  // and both used to end up as `return undefined` — so the caller crashed on the
+  // missing field ("Cannot read properties of undefined") instead of showing why.
+  if (r.status === 401) {
+    const detail = await r.json().catch(() => ({}));
+    if (path === '/auth/login') {
+      // Signing in: the credentials were wrong. Do not log out, there is no
+      // session yet, and the user needs to see the reason.
+      throw new Error(detail.detail === 'Invalid credentials'
+        ? 'Incorrect username or password.'
+        : (detail.detail || 'Incorrect username or password.'));
+    }
+    // Anywhere else: the token is missing, expired or no longer valid.
+    logout();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ detail: r.statusText }));
+    let msg = e.detail || r.statusText || `Request failed (${r.status})`;
+    // FastAPI validation errors arrive as a list of objects, which stringify to
+    // "[object Object]" — useless in a toast.
+    if (Array.isArray(msg)) {
+      msg = msg.map(x => (x && x.msg) ? `${(x.loc || []).slice(-1)[0]}: ${x.msg}` : String(x)).join('; ');
+    } else if (typeof msg === 'object') {
+      msg = JSON.stringify(msg);
+    }
+    if (r.status === 403) msg = msg || 'You do not have permission to do that.';
+    if (r.status >= 500)  msg = `Server error: ${msg}`;
+    throw new Error(msg);
+  }
+
   if (r.status === 204) return null;
-  return r.json();
+
+  // Guard the JSON parse. If something returns HTML where JSON was expected —
+  // the SPA catch-all for a mistyped path, or a proxy/login portal in front of
+  // BRACE — the raw failure is "Unexpected token '<'", which sends people
+  // looking in entirely the wrong place.
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('json')) {
+    throw new Error('The server returned an unexpected response for ' + path
+                  + '. If BRACE sits behind a proxy or SSO gateway, check it is '
+                  + 'not intercepting /api requests.');
+  }
+  try {
+    return await r.json();
+  } catch (parseErr) {
+    throw new Error('The server sent a malformed response for ' + path + '.');
+  }
 }
 
 // ── Utilities ──────────────────────────────────────────
@@ -67,15 +121,28 @@ async function doLogin() {
   if (!u || !p) { liErr('Enter username and password'); return; }
   const btn = document.getElementById('btn-login');
   btn.disabled = true;
+  liErr('');                      // clear any previous failure before retrying
   try {
     const r = await api('POST', '/auth/login', { username: u, password: p });
+    // Defensive: api() throws on every error path, so this only trips if the
+    // server ever returns 200 with an unexpected shape (a proxy, say). Better a
+    // sentence than "Cannot read properties of undefined".
+    if (!r || !r.access_token) {
+      throw new Error('Signed in, but the server did not return a session token. '
+                    + 'If there is a proxy in front of BRACE, check it is not '
+                    + 'rewriting the response.');
+    }
     _token = r.access_token; _user = { username: r.username, role: r.system_role };
     localStorage.setItem('brace_token', _token);
     localStorage.setItem('brace_user', JSON.stringify(_user));
     afterLogin(r);
   } catch(e) { liErr(e.message); } finally { btn.disabled = false; }
 }
-function liErr(msg) { const el = document.getElementById('li-err'); el.textContent = msg; el.style.display = 'block'; }
+function liErr(msg) {
+  const el = document.getElementById('li-err');
+  el.textContent = msg || '';
+  el.style.display = msg ? 'block' : 'none';
+}
 
 function afterLogin(r) {
   const name = r.username || _user.username;

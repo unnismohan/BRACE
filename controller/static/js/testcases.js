@@ -78,7 +78,9 @@ async function downloadAllScripts(btn) {
   try {
     const r = await fetch(`/api/projects/${_curProj.id}/files/download-all`,
       { headers: { Authorization:`Bearer ${_token}` } });
-    if (r.status===401) { logout(); return; }
+    // Raw fetch (text/blob), so api()'s handling does not apply — say why
+    // before dropping the user back to the login screen.
+    if (r.status===401) { toast('Your session has expired. Please sign in again.','e'); logout(); return; }
     if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
     const blob = await r.blob();
     if (!blob.size) throw new Error('Server returned an empty file');

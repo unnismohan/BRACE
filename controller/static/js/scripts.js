@@ -362,7 +362,9 @@ async function openFile(path) {
   try {
     const opts = { method:'GET', headers: _token ? { Authorization:`Bearer ${_token}` } : {} };
     const r = await fetch(`/api/projects/${_curProj.id}/files/${path}`, opts);
-    if (r.status===401) { logout(); return; }
+    // Raw fetch (text/blob), so api()'s handling does not apply — say why
+    // before dropping the user back to the login screen.
+    if (r.status===401) { toast('Your session has expired. Please sign in again.','e'); logout(); return; }
     if (!r.ok) throw new Error(await r.text());
     const content = await r.text();
     _curFile = path; _dirty = false;
@@ -628,7 +630,9 @@ async function openExcelFile(path) {
   try {
     const r = await fetch(`/api/projects/${_curProj.id}/excel/${path}`,
       { headers: _token ? { Authorization:`Bearer ${_token}` } : {} });
-    if (r.status===401) { logout(); return; }
+    // Raw fetch (text/blob), so api()'s handling does not apply — say why
+    // before dropping the user back to the login screen.
+    if (r.status===401) { toast('Your session has expired. Please sign in again.','e'); logout(); return; }
     if (!r.ok) throw new Error(await r.text());
     _excelData = await r.json();
     _excelData.cur = _excelData.sheet_names[0] || 'Sheet1';
