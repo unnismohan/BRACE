@@ -42,6 +42,13 @@ message bus to operate.
 - **Email notifications** with only-on-change suppression, so alerts stay readable
 - **AI debug assistant** — optional; produces a copyable prompt when there is no
   outbound connectivity
+- **Test cases from git** — every test in the repo becomes a BRACE test case,
+  tags and documentation included; nothing is ever deleted behind your back
+- **Live run updates** pushed over SSE, so a 1000-case run costs no more to
+  watch than a 10-case one
+- **Audit log** — who started, changed or deleted what
+- **Retention** — an optional nightly purge, because runs x test cases is what
+  eventually fills the disk
 - **Prometheus metrics** at `/metrics`
 
 ## Screens
@@ -87,6 +94,7 @@ docker compose -f docker-compose.local.yml down && rm -rf local_data/config
 - [Sizing and concurrency](#sizing-and-concurrency)
 - [Upgrading](#upgrading)
 - [Operations](#operations)
+- [Test cases from git](#test-cases-from-git)
 - [Email notifications](#email-notifications)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
@@ -239,6 +247,11 @@ PLAIN TEXT` and continues. Grep for that after any secret change.
 | `BRACE_PUBLIC_URL` | — | External URL users browse to (the Route). **Notification emails cannot link back to a run without it.** Never the Service address. |
 | `BRACE_LOG_FORMAT` | `text` | `json` emits one object per line with `run_id`/`project_id`/`user` for log indexing. |
 | `BRACE_LOG_LEVEL` | `INFO` | Standard Python levels. |
+| `BRACE_RETENTION_DAYS` | `0` (**off**) | Delete runs finished more than N days ago, with their reports and logs. `0` keeps everything forever, so upgrading never starts deleting history by itself. |
+| `BRACE_RETENTION_KEEP_MIN` | `20` | Runs kept per project regardless of age. Stops retention emptying a project that runs monthly. |
+| `BRACE_AUDIT_RETENTION_DAYS` | `365` | Audit rows are small; keep them far longer than run data. `0` = forever. |
+| `BRACE_MAINT_CRON` | `30 2 * * *` | When the nightly purge, orphan sweep and database compaction run. Read in `BRACE_SCHEDULER_TZ`. |
+| `BRACE_SSE_MAX_SUBS` | `20` | Concurrent live watchers per run. Past this a browser falls back to polling. |
 | `STATIC_DIR` | derived | Only needed when running outside the container. |
 
 ---
@@ -287,6 +300,15 @@ Database migrations run automatically at startup — new columns are added idemp
 manual step is needed. Migrations are additive only; **there is no downgrade path**, so roll back
 by redeploying the previous image tag and accepting that newer columns are simply unused.
 
+#### Upgrading to 2.2.0
+
+Adds the `audit_log` table, git-sync columns on `projects` and `test_cases`, and an index on
+`test_runs(finished_at)` — all applied automatically. Nothing changes behaviour on its own:
+retention ships **off** (`BRACE_RETENTION_DAYS=0`), every project stays in `manual` sync mode, and
+existing project roles are unchanged. Set `BRACE_RETENTION_DAYS` when you want retention, and use
+Administration → Housekeeping → **Preview** before the first real purge.
+
+
 Frontend changes require a rebuild. `COPY controller/` bakes the SPA into the image; there is no
 volume mount for it.
 
@@ -319,15 +341,52 @@ Metrics worth alerting on:
 | `brace_runs_queued` | Sustained backlog means the pod is undersized. |
 | `brace_test_slots_available` | Pinned at 0 for long periods: same conclusion. |
 | `brace_tests_total{outcome="timeout"}` | Rising = wedged browsers, or a timeout set too low. |
+| `brace_run_items_count` | Rows in the table that actually drives database growth. Flat-lining after a purge is how you confirm retention is working. |
+| `brace_retention_days` | `0` here means retention is off — worth an alert of its own if you intended it on. |
 
-### Disk
+### Disk and retention
 
-Results grow at roughly **13 MB per run**. On a 2 Gi PVC that is ~150 runs. Two ways to reclaim:
+Results grow at roughly **13 MB per run**, and the database grows by (runs × test cases). A
+nightly 1000-case suite writes ~30,000 `test_run_items` a month plus a log and a report per case,
+so both need bounding.
 
-- **Settings → Danger Zone → Old runs only** keeps the 10 most recent (per project, manual).
-- Raise the PVC size in `k8s/supporting.yaml` if your storage class allows expansion.
+**Automatic (recommended).** Set `BRACE_RETENTION_DAYS` in the Deployment. A job at
+`BRACE_MAINT_CRON` then:
 
-There is no automatic retention. Alert on `brace_results_disk_bytes` and prune deliberately.
+1. deletes runs that finished before the cut-off, DB rows first and then their result folders —
+   a crash between the two leaves at worst an orphan folder, never a run row pointing at a
+   missing report;
+2. keeps `BRACE_RETENTION_KEEP_MIN` runs per project regardless of age;
+3. **never touches a run that is executing**, whatever its age;
+4. sweeps orphaned result folders and stale editor quick-run output (this part runs even with
+   retention off);
+5. runs `ANALYZE`, and `VACUUM` only when there is real space to reclaim — and never while a
+   test is executing, because it takes an exclusive lock for a full file rewrite.
+
+Retention defaults to **off**. Turning it on is a deliberate act: a deployment that silently
+began deleting run history on upgrade would be a worse surprise than a full disk.
+
+**Manual.** Administration → Housekeeping shows current usage, and has
+**Preview (dry run)** — which reports exactly what would go without deleting anything — next to
+**Run Now**. Per project, Settings → Danger Zone → *Old runs only* keeps the 10 most recent.
+
+Alert on `brace_results_disk_bytes` either way; raise the PVC in `k8s/supporting.yaml` if your
+storage class allows expansion.
+
+### Audit log
+
+Administration → Audit Log records every change made through BRACE: runs started and cancelled,
+test cases and suites created, edited and deleted, scripts saved, schedules and settings changed,
+members added and roles altered. Filter by user, action or date, or query it directly:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://<route>/api/admin/audit?action=run&date_from=2026-08-01&limit=100"
+```
+
+An action family (`run`) matches its members (`run.trigger`, `run.cancel`). Reads are not
+recorded. Passwords, tokens and API keys are recorded as *changed*, never as their value. Rows
+are purged by the same nightly job at `BRACE_AUDIT_RETENTION_DAYS`.
 
 ### Backup
 
@@ -343,6 +402,51 @@ Use SQLite's `.backup` as above rather than copying `brace.db` directly — the 
 mode, so a plain file copy can miss committed transactions still in the WAL.
 
 Scripts are reproducible from git; results are disposable.
+
+---
+
+## Test cases from git
+
+Per project, Settings → **Test Cases from Git**. Two modes:
+
+- **`manual`** (default) — test cases are created and edited in BRACE. Nothing changes.
+- **`git`** — the repository is the source of truth. Every test in a `Testcases` folder becomes a
+  BRACE test case; name, `[Tags]` and `[Documentation]` come from the file.
+
+Parsing uses Robot's own `TestSuiteBuilder`, one file at a time, so a syntax error in one file is
+reported as an error against that file rather than making the sync conclude that every test in the
+project has vanished.
+
+```bash
+# Preview — writes nothing
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  "https://<route>/api/projects/1/sync?dry_run=true"
+```
+
+Three invariants:
+
+| | |
+|---|---|
+| **Nothing is deleted** | A test removed from the repo is flagged `not in repo` and kept — its run history is real history. Removing it is a deliberate act in the UI. |
+| **Hand-made cases are untouched** | Only cases carrying a `source_path` are managed. Every statement is scoped to those. |
+| **One case runs one test** | Each synced case is pinned with `--test "<name>"`. Without that, a file holding five tests would produce five cases that each run all five. |
+
+Identity is `(source_path, source_test)`, so renaming a test reads as one removed and one added.
+To keep a code across renames, pin it in the repository:
+
+```robotframework
+*** Test Cases ***
+Verify Successful Login
+    [Tags]    smoke    braceid:VDRC_LOGIN_01
+```
+
+`tc_code` is unique across the whole server, so if that code is already taken by another project
+the sync assigns a generated one and reports it — two projects can point at the same repository
+without colliding.
+
+In `git` mode a **Git Sync** from the Scripts tab reconciles the test cases in the same action, so
+pulling scripts and updating the case list never drift apart. An optional per-project cron
+(`sync_cron`) does it on a timetable.
 
 ---
 
@@ -413,6 +517,13 @@ Enforced in the deployment:
 - Path traversal is blocked on every filesystem endpoint by resolving and containment-checking
   against the project directory.
 - Project membership is checked per request; cross-project IDs are rejected rather than trusted.
+- Project roles are `viewer` / `tester` / `project_admin`, mapped to capabilities
+  (`view` / `run` / `edit` / `manage`) in one place — `ROLE_CAPS` in `controller/main.py`. A
+  **Viewer** can read everything and change nothing: the UI hides the controls and opens scripts
+  read-only, and the server refuses them regardless of what the browser sends.
+- At startup the app walks its own route table and logs an error for any mutating `/api/` route
+  with no authentication dependency, so a new endpoint added without a `Depends` is reported on
+  the next boot rather than discovered later.
 - Git tokens, the AI API key and the SMTP password are encrypted at rest and never returned to the browser. Git
   credentials are masked in sync logs.
 
@@ -489,6 +600,8 @@ controller/              FastAPI backend + SPA
   db.py                  SQLite schema and idempotent migrations
   scheduler.py           APScheduler wrapper, cron parsing
   mailer.py              SMTP transport, provider presets, email templates
+  maintenance.py         Retention purge, orphan sweep, ANALYZE/VACUUM
+  git_sync.py            Parses .robot files into test cases (git mode)
   static/                index.html + css/ + js/ (no build step)
 k8s/
   deployment.yaml        Deployment + Service + Route

@@ -34,7 +34,9 @@ from scheduler import (
     SCHEDULER_TZ, build_trigger, next_run_times, reload_schedules,
     scheduled_job_ids, start_scheduler, stop_scheduler,
 )
+import git_sync
 import mailer
+import maintenance
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +88,7 @@ RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/opt/rf/results"))
 # BRACE_VERSION from its APP_VERSION build arg, which also stamps the image
 # label, so /health and the image can never disagree. The literal below is only
 # the fallback for running outside the container.
-APP_VERSION = os.getenv("BRACE_VERSION", "").strip() or "2.1.3"
+APP_VERSION = os.getenv("BRACE_VERSION", "").strip() or "2.2.0"
 
 BSS_ENV     = os.getenv("BSS_ENV",    "staging")
 IMAGE_TAG   = os.getenv("IMAGE_TAG",  "unknown")
@@ -146,6 +148,37 @@ _cancelled_runs: set = set()   # run_ids cancelled before their slot came up
 _run_slots: Optional[asyncio.Semaphore] = None   # created in lifespan (needs a loop)
 _test_slots: Optional[asyncio.Semaphore] = None  # global robot-process budget
 _main_loop: Optional[asyncio.AbstractEventLoop] = None  # for scheduler thread hand-off
+
+# ── Live run events (SSE) ────────────────────────────────────────
+# run_id → set of subscriber queues. In-process is the right scope: runs execute
+# in this pod and the Deployment is strategy: Recreate with one replica, so
+# there is no second process that could hold a subscriber for a run it is not
+# running. A multi-replica deployment would need a broker here instead.
+_run_subs: dict = {}
+# Per-run subscriber ceiling. Ten people watching one run is already unusual;
+# past that the browsers fall back to polling rather than the pod fanning out
+# indefinitely.
+SSE_MAX_SUBS = max(1, int(os.getenv("BRACE_SSE_MAX_SUBS", "20")))
+SSE_HEARTBEAT_SEC = 15    # keeps the OCP router from idling the connection out
+
+
+def _publish(run_id: str, event: str, data: dict) -> None:
+    """Fan one event out to everyone watching this run. Never raises, never blocks.
+
+    Called from the executor's hot path, so a slow or dead subscriber must not
+    be able to stall a test finishing: queues are unbounded-put via put_nowait
+    and a full one simply drops the event — the client's next reconnect (or the
+    fallback poll) resynchronises from the database, which is the source of
+    truth either way.
+    """
+    subs = _run_subs.get(run_id)
+    if not subs:
+        return
+    for q in list(subs):
+        try:
+            q.put_nowait((event, data))
+        except Exception:                              # noqa: BLE001 — see docstring
+            pass
 
 # Process-lifetime counters for /metrics. Reset on restart, which is normal for
 # Prometheus counters — it detects the reset and handles it.
@@ -257,10 +290,47 @@ def _reconcile_orphaned_runs() -> None:
                     "left behind by a previous pod.", runs, items)
 
 
+def _audit_route_guards() -> None:
+    """Warn at startup about any mutating API route with no authentication.
+
+    Cheap insurance for the thing that goes wrong when a codebase grows a fourth
+    role: one new @app.post added without a Depends, silently open to anyone.
+    A test would catch it only if someone remembered to write one; this catches
+    it every boot.
+    """
+    guards = {"_current_user", "_require_sys_admin", "dep"}     # 'dep' = _require_project_role
+    # Routes that are public by design. Anything not on this list must be
+    # authenticated, so a new endpoint added without a Depends is reported.
+    public = {"/api/auth/login"}
+    unguarded = []
+    for route in app.routes:
+        methods = getattr(route, "methods", set()) or set()
+        path    = getattr(route, "path", "")
+        if (path in public or not path.startswith("/api/")
+                or not (methods & {"POST", "PUT", "PATCH", "DELETE"})):
+            continue
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            continue
+        found, stack = False, list(dependant.dependencies)
+        while stack and not found:
+            d = stack.pop()
+            name = getattr(d.call, "__name__", "")
+            if name in guards or "oauth2" in name.lower():
+                found = True
+            stack.extend(d.dependencies)
+        if not found:
+            unguarded.append(f"{'/'.join(sorted(methods & {'POST','PUT','PATCH','DELETE'}))} {path}")
+    if unguarded:
+        log.error("SECURITY: %d mutating API route(s) have no auth dependency: %s",
+                  len(unguarded), ", ".join(sorted(unguarded)))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     _preflight_security_check()
+    _audit_route_guards()
     _reconcile_orphaned_runs()
     _slots()                       # bind the semaphore to this event loop
     global _main_loop
@@ -273,10 +343,12 @@ async def lifespan(app: FastAPI):
     _now = datetime.now()
     log.info("BRACE v2 started — env=%s tag=%s version=%s max_concurrent_runs=%d "
              "max_concurrent_tests=%d run_parallel=%d test_timeout=%ds "
-             "scheduler_tz=%s container_tz=%s local_time=%s",
+             "scheduler_tz=%s container_tz=%s local_time=%s retention=%s",
              BSS_ENV, IMAGE_TAG, APP_VERSION, MAX_CONCURRENT_RUNS, MAX_CONCURRENT_TESTS,
              RUN_PARALLEL_DEFAULT, TEST_TIMEOUT_SEC, SCHEDULER_TZ,
-             os.getenv("TZ") or time.tzname[0], _now.strftime("%Y-%m-%d %H:%M:%S"))
+             os.getenv("TZ") or time.tzname[0], _now.strftime("%Y-%m-%d %H:%M:%S"),
+             f"{maintenance.RETENTION_DAYS}d (keep min {maintenance.RETENTION_KEEP_MIN}/project)"
+             if maintenance.RETENTION_DAYS else "off")
     yield
     stop_scheduler()
 
@@ -346,6 +418,87 @@ def _require_project_role(*roles: str):
 _proj_viewer  = _require_project_role("viewer", "tester", "project_admin")
 _proj_tester  = _require_project_role("tester", "project_admin")
 _proj_admin   = _require_project_role("project_admin")
+
+# What each project role may do. The three dependencies above cover endpoints
+# whose path carries {project_id}; this map is the same rule expressed for the
+# endpoints that resolve the project from a resource id (a test case, a suite, a
+# run) and so cannot use a path-parameter dependency.
+ROLE_CAPS = {
+    "viewer":        {"view"},
+    "tester":        {"view", "run", "edit"},
+    "project_admin": {"view", "run", "edit", "manage"},
+}
+
+
+def _require_cap(project_id: int, user: dict, cap: str) -> str:
+    """Authorise `user` for `cap` on `project_id`, or raise 403.
+
+    Used by resource-scoped endpoints. Every one of these previously carried its
+    own inline role tuple, and they had already drifted apart — deleting a suite
+    demanded project_admin in one place and accepted tester in another.
+    """
+    role = _get_project_role(project_id, user["username"], user["role"])
+    if cap not in ROLE_CAPS.get(role or "", ()):
+        raise HTTPException(403, f"Requires '{cap}' permission on this project"
+                                 f" (your role: {role or 'none'})")
+    return role
+
+
+def _owned_row(conn, sql: str, ident, user: dict, cap: str, missing: str):
+    """Fetch a resource row, authorise the caller against its project, or raise.
+
+    Closes the connection on both failure paths — the callers open it before
+    they can know which project the resource belongs to, and an early `raise`
+    without this leaks the handle.
+    """
+    row = conn.execute(sql, (ident,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, missing)
+    try:
+        _require_cap(row["project_id"], user, cap)
+    except HTTPException:
+        conn.close()
+        raise
+    return row
+
+
+# ── Audit trail ──────────────────────────────────────────────────
+# Records who changed what. Three rules, all of them load-bearing:
+#   1. It never raises. An audit write failing must not fail the operation the
+#      user asked for — a lost audit line is bad, a lost test run is worse.
+#   2. It records mutations only. Logging reads would bury the interesting lines
+#      under thousands of page views.
+#   3. It never records a secret. Passwords, tokens and API keys are recorded as
+#      the fact that they changed, never the value.
+_AUDIT_SECRET_KEYS = ("password", "token", "api_key", "secret", "key")
+
+
+def audit(user, action: str, project_id: Optional[int] = None,
+          target: Optional[str] = None, **detail) -> None:
+    import json as _json
+    try:
+        username = user.get("username") if isinstance(user, dict) else str(user or "")
+        safe = {}
+        for k, v in detail.items():
+            if any(s in k.lower() for s in _AUDIT_SECRET_KEYS):
+                # Keep the signal (it changed), drop the value.
+                safe[k] = bool(v) if not isinstance(v, bool) else v
+            else:
+                safe[k] = v
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO audit_log (ts, username, action, project_id, target, detail)"
+                " VALUES (?,?,?,?,?,?)",
+                (datetime.now().isoformat(timespec="seconds"), username, action,
+                 project_id, None if target is None else str(target),
+                 _json.dumps(safe, default=str) if safe else None))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:                       # noqa: BLE001 — see rule 1
+        log.debug("Audit write failed for %s: %s", action, exc)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -424,8 +577,8 @@ def list_users():
     return rows_to_list(rows)
 
 
-@app.post("/api/users", dependencies=[Depends(_require_sys_admin)])
-def create_user(req: UserCreate):
+@app.post("/api/users")
+def create_user(req: UserCreate, user=Depends(_require_sys_admin)):
     if req.system_role not in ("user", "admin"):
         raise HTTPException(400, "system_role must be user or admin")
     conn = get_db()
@@ -440,11 +593,12 @@ def create_user(req: UserCreate):
         raise HTTPException(409, "Username already exists")
     uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.close()
+    audit(user, "user.create", target=req.username, system_role=req.system_role)
     return {"id": uid, "username": req.username, "system_role": req.system_role}
 
 
-@app.post("/api/users/bulk-csv", dependencies=[Depends(_require_sys_admin)])
-async def bulk_create_users(file: UploadFile = File(...)):
+@app.post("/api/users/bulk-csv")
+async def bulk_create_users(file: UploadFile = File(...), user=Depends(_require_sys_admin)):
     """CSV: username, password, system_role (opt), full_name (opt), email (opt)"""
     import csv
     content = (await file.read()).decode("utf-8-sig")
@@ -472,12 +626,15 @@ async def bulk_create_users(file: UploadFile = File(...)):
         except Exception:
             skipped.append(username)
     conn.close()
+    audit(user, "user.bulk_create", created=len(created), skipped=len(skipped))
     return {"created": len(created), "skipped": skipped, "users": created}
 
 
-@app.put("/api/users/{uid}", dependencies=[Depends(_require_sys_admin)])
-def update_user(uid: int, req: UserUpdate):
+@app.put("/api/users/{uid}")
+def update_user(uid: int, req: UserUpdate, user=Depends(_require_sys_admin)):
     conn = get_db()
+    before = conn.execute("SELECT username, system_role FROM users WHERE id=?",
+                          (uid,)).fetchone()
     if req.system_role:
         if req.system_role not in ("user", "admin"):
             conn.close()
@@ -492,15 +649,26 @@ def update_user(uid: int, req: UserUpdate):
         conn.execute("UPDATE users SET email=? WHERE id=?", (req.email, uid))
     conn.commit()
     conn.close()
+    target = before["username"] if before else str(uid)
+    # A privilege change is the single most important line in this log, so it
+    # gets its own action rather than being buried inside a generic update.
+    if req.system_role and before and req.system_role != before["system_role"]:
+        audit(user, "user.role_change", target=target,
+              **{"from": before["system_role"], "to": req.system_role})
+    audit(user, "user.update", target=target,
+          password_changed=bool(req.password),
+          fields=[f for f in ("full_name", "email") if getattr(req, f) is not None])
     return {"ok": True}
 
 
-@app.delete("/api/users/{uid}", dependencies=[Depends(_require_sys_admin)])
-def delete_user(uid: int):
+@app.delete("/api/users/{uid}")
+def delete_user(uid: int, user=Depends(_require_sys_admin)):
     conn = get_db()
+    row = conn.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
     conn.execute("DELETE FROM users WHERE id=?", (uid,))
     conn.commit()
     conn.close()
+    audit(user, "user.delete", target=row["username"] if row else str(uid))
     return {"deleted": uid}
 
 
@@ -588,6 +756,8 @@ def create_project(req: ProjectCreate, user=Depends(_current_user)):
     conn.close()
     d = dict(row)
     d.pop("git_token", None)
+    audit(user, "project.create", project_id=pid, target=req.name,
+          git_url=req.git_url or None)
     return d
 
 
@@ -613,15 +783,20 @@ def update_project(project_id: int, req: ProjectUpdate, user=Depends(_proj_admin
     if req.status:      conn.execute("UPDATE projects SET status=?      WHERE id=?", (req.status,      project_id))
     conn.commit()
     conn.close()
+    audit(user, "project.update", project_id=project_id,
+          name=req.name, status=req.status)
     return {"ok": True}
 
 
-@app.delete("/api/projects/{project_id}", dependencies=[Depends(_require_sys_admin)])
-def delete_project(project_id: int):
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: int, user=Depends(_require_sys_admin)):
     conn = get_db()
+    row = conn.execute("SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()
     conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
     conn.commit()
     conn.close()
+    audit(user, "project.delete", project_id=project_id,
+          target=row["name"] if row else str(project_id))
     return {"deleted": project_id}
 
 
@@ -662,11 +837,16 @@ def update_git_config(project_id: int, req: GitConfigUpdate, user=Depends(_proj_
                      (encrypt_token(req.git_token), project_id))
     conn.commit()
     conn.close()
+    audit(user, "git.config_update", project_id=project_id,
+          git_url=req.git_url, git_branch=req.git_branch,
+          git_token=req.git_token is not None)   # recorded as True/False, never the value
     return {"ok": True}
 
 
 @app.post("/api/projects/{project_id}/git-sync")
-async def git_sync(project_id: int, user=Depends(_proj_tester)):
+async def git_pull(project_id: int, user=Depends(_proj_tester)):
+    # NB: named git_pull, not git_sync — the module `git_sync` is imported above
+    # and a same-named function here would shadow it for the whole file.
     conn = get_db()
     row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     conn.close()
@@ -759,8 +939,111 @@ async def git_sync(project_id: int, user=Depends(_proj_tester)):
 
         copied = await asyncio.to_thread(_copy_all)
         yield f"[BRACE] Done — {copied} robot file(s) synced\n"
+        audit(user, "git.pull", project_id=project_id, branch=branch, files=copied)
+
+        # Projects in git mode reconcile their test cases in the same action —
+        # pulling scripts and then leaving the case list stale is exactly the
+        # drift this feature exists to remove.
+        if (row["sync_mode"] or "manual") == "git":
+            yield "\n[BRACE] Reconciling test cases from the repository…\n"
+            try:
+                res = await asyncio.to_thread(_run_tc_sync, project_id, user["username"])
+                s = git_sync.summary(res)
+                yield (f"[BRACE] Test cases — added {s['added']}, updated {s['updated']}, "
+                       f"unchanged {s['unchanged']}, missing {s['missing']}\n")
+                for e in res.get("errors", [])[:10]:
+                    yield f"[BRACE WARN] {e}\n"
+            except Exception as exc:                   # noqa: BLE001 — surfaced, not fatal
+                yield f"[BRACE ERROR] Test case sync failed: {exc}\n"
 
     return StreamingResponse(stream(), media_type="text/plain")
+
+
+# ── Git-native test cases ────────────────────────────────────────
+class SyncConfigReq(BaseModel):
+    sync_mode: str                       # 'manual' | 'git'
+    sync_cron: Optional[str] = None      # optional automatic reconcile
+
+
+def _run_tc_sync(project_id: int, username: str, dry_run: bool = False) -> dict:
+    """Blocking — parses every .robot file. Always call via to_thread."""
+    conn = get_db()
+    try:
+        res = git_sync.sync_project(conn, project_id, _project_suites(project_id),
+                                    next_tc_code, _norm_tags, dry_run=dry_run)
+        if not dry_run:
+            import json as _json
+            conn.execute("UPDATE projects SET last_sync_at=?, last_sync_result=? WHERE id=?",
+                         (datetime.now().isoformat(timespec="seconds"),
+                          _json.dumps(git_sync.summary(res)), project_id))
+            conn.commit()
+    finally:
+        conn.close()
+    if not dry_run:
+        s = git_sync.summary(res)
+        audit(username, "project.sync", project_id=project_id, **s)
+    return res
+
+
+@app.get("/api/projects/{project_id}/sync-config")
+def get_sync_config(project_id: int, user=Depends(_proj_viewer)):
+    conn = get_db()
+    row = conn.execute("SELECT sync_mode, sync_cron, last_sync_at, last_sync_result,"
+                       " git_url FROM projects WHERE id=?", (project_id,)).fetchone()
+    counts = conn.execute(
+        "SELECT COUNT(*) AS total,"
+        " SUM(CASE WHEN source_path IS NOT NULL THEN 1 ELSE 0 END) AS synced,"
+        " SUM(CASE WHEN sync_status='missing' THEN 1 ELSE 0 END)   AS missing"
+        " FROM test_cases WHERE project_id=?", (project_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404)
+    import json as _json
+    try:
+        last = _json.loads(row["last_sync_result"]) if row["last_sync_result"] else None
+    except ValueError:
+        last = None
+    return {"sync_mode": row["sync_mode"] or "manual",
+            "sync_cron": row["sync_cron"],
+            "last_sync_at": row["last_sync_at"],
+            "last_sync": last,
+            "has_git": bool(row["git_url"]),
+            "counts": {"total": counts["total"] or 0,
+                       "synced": counts["synced"] or 0,
+                       "missing": counts["missing"] or 0}}
+
+
+@app.put("/api/projects/{project_id}/sync-config")
+def put_sync_config(project_id: int, req: SyncConfigReq, user=Depends(_proj_admin)):
+    if req.sync_mode not in ("manual", "git"):
+        raise HTTPException(400, "sync_mode must be 'manual' or 'git'")
+    if req.sync_cron:
+        try:
+            build_trigger(req.sync_cron)
+        except Exception as exc:                       # noqa: BLE001
+            raise HTTPException(400, f"Invalid sync schedule: {exc}")
+    conn = get_db()
+    conn.execute("UPDATE projects SET sync_mode=?, sync_cron=? WHERE id=?",
+                 (req.sync_mode, req.sync_cron or None, project_id))
+    conn.commit()
+    conn.close()
+    _reload_sync_jobs()
+    audit(user, "project.sync_config", project_id=project_id,
+          sync_mode=req.sync_mode, sync_cron=req.sync_cron)
+    return get_sync_config(project_id, user)
+
+
+@app.post("/api/projects/{project_id}/sync")
+async def sync_test_cases(project_id: int, dry_run: bool = False,
+                          user=Depends(_proj_tester)):
+    """Reconcile the test case list against the .robot files on disk.
+
+    dry_run reports exactly what would change without writing anything — worth
+    running first on a project with existing hand-created cases.
+    """
+    res = await asyncio.to_thread(_run_tc_sync, project_id, user["username"], dry_run)
+    res["summary"] = git_sync.summary(res)
+    return res
 
 
 # ── Project Members ──────────────────────────────────────────────
@@ -810,6 +1093,8 @@ def add_members_bulk(project_id: int, req: MemberBulkAdd, user=Depends(_proj_adm
             (project_id, uid, req.project_role))
     conn.commit()
     conn.close()
+    audit(user, "member.add_bulk", project_id=project_id,
+          usernames=list(found), role=req.project_role)
     return {"added": len(found), "role": req.project_role}
 
 
@@ -830,6 +1115,8 @@ def add_member(project_id: int, req: MemberAdd, user=Depends(_proj_admin)):
         conn.commit()
     finally:
         conn.close()
+    audit(user, "member.add", project_id=project_id, target=req.username,
+          role=req.project_role)
     return {"ok": True}
 
 
@@ -838,19 +1125,28 @@ def update_member(project_id: int, uid: int, req: MemberAdd, user=Depends(_proj_
     if req.project_role not in ("viewer", "tester", "project_admin"):
         raise HTTPException(400, "Invalid project_role")
     conn = get_db()
+    prev = conn.execute("SELECT project_role FROM project_members"
+                        " WHERE project_id=? AND user_id=?", (project_id, uid)).fetchone()
+    who = conn.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
     conn.execute("UPDATE project_members SET project_role=? WHERE project_id=? AND user_id=?",
                  (req.project_role, project_id, uid))
     conn.commit()
     conn.close()
+    audit(user, "member.role_change", project_id=project_id,
+          target=who["username"] if who else str(uid),
+          **{"from": prev["project_role"] if prev else None, "to": req.project_role})
     return {"ok": True}
 
 
 @app.delete("/api/projects/{project_id}/members/{uid}")
 def remove_member(project_id: int, uid: int, user=Depends(_proj_admin)):
     conn = get_db()
+    who = conn.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
     conn.execute("DELETE FROM project_members WHERE project_id=? AND user_id=?", (project_id, uid))
     conn.commit()
     conn.close()
+    audit(user, "member.remove", project_id=project_id,
+          target=who["username"] if who else str(uid))
     return {"ok": True}
 
 
@@ -1022,7 +1318,12 @@ def save_file(project_id: int, filepath: str, body: dict, user=Depends(_proj_tes
     if path.suffix not in ALLOWED_EXTS:
         raise HTTPException(400, f"Extension {path.suffix} not allowed")
     path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
     path.write_text(body.get("content", ""))
+    # Editing a .robot file changes what the tests actually do, so this belongs
+    # in the trail even though saves are frequent — retention keeps it bounded.
+    audit(user, "script.save", project_id=project_id, target=filepath,
+          created=not existed, bytes=len(body.get("content", "")))
     return {"saved": filepath}
 
 
@@ -1055,6 +1356,7 @@ async def upload_files(project_id: int, files: list[UploadFile] = File(...), use
             dest = suites_dir / filename
             dest.write_bytes(data)
             saved.append(filename)
+    audit(user, "script.upload", project_id=project_id, files=len(saved))
     return {"uploaded": saved}
 
 
@@ -1064,6 +1366,7 @@ def delete_file(project_id: int, filepath: str, user=Depends(_proj_tester)):
     if not path.exists():
         raise HTTPException(404, "File not found")
     path.unlink()
+    audit(user, "script.delete", project_id=project_id, target=filepath)
     return {"deleted": filepath}
 
 
@@ -1085,6 +1388,8 @@ def fs_rename(project_id: int, req: RenameReq, user=Depends(_proj_tester)):
         raise HTTPException(400, f"Extension {dst.suffix} not allowed")
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)
+    audit(user, "script.rename", project_id=project_id, target=req.new_path,
+          **{"from": req.old_path})
     return {"renamed": req.new_path}
 
 
@@ -1114,6 +1419,7 @@ def fs_rmdir(project_id: int, dirpath: str, user=Depends(_proj_tester)):
         raise HTTPException(404, "Folder not found")
     n = sum(1 for _ in path.rglob("*") if _.is_file())
     shutil.rmtree(path)
+    audit(user, "script.rmdir", project_id=project_id, target=dirpath, files_removed=n)
     return {"deleted": dirpath, "files_removed": n}
 
 
@@ -1150,6 +1456,7 @@ async def quick_run(project_id: int, req: QuickRunReq, user=Depends(_proj_tester
     run_id  = f"qr-{project_id}-{int(datetime.now().timestamp()*1000)}"
     run_dir = _project_results(project_id) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    audit(user, "run.quick", project_id=project_id, target=req.suite_path)
 
     cmd = [
         "python", "-m", "robot",
@@ -1161,7 +1468,7 @@ async def quick_run(project_id: int, req: QuickRunReq, user=Depends(_proj_tester
         "--variable",  f"BSS_ENV:{BSS_ENV}",
     ]
     if req.extra_args:
-        cmd.extend(req.extra_args.split())
+        cmd.extend(_split_args(req.extra_args))
     cmd.append(str(target))
 
     async def stream():
@@ -1250,6 +1557,7 @@ def create_test_case(project_id: int, req: TCCreate, user=Depends(_proj_tester))
     uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     row = conn.execute("SELECT * FROM test_cases WHERE id=?", (uid,)).fetchone()
     conn.close()
+    audit(user, "tc.create", project_id=project_id, target=tc_code, name=req.name)
     return row_to_dict(row)
 
 
@@ -1327,6 +1635,8 @@ async def bulk_create_test_cases(project_id: int, file: UploadFile = File(...), 
         created.append({"id": uid, "tc_code": tc_code, "name": name, "suites": assigned})
 
     conn.close()
+    audit(user, "tc.bulk_create", project_id=project_id, created=len(created),
+          suites_created=suites_created, file=file.filename)
     return {
         "created":        len(created),
         "suites_created": suites_created,
@@ -1416,14 +1726,16 @@ def test_case_history(tc_id: int, limit: int = 50, user=Depends(_current_user)):
 @app.put("/api/test-cases/{tc_id}")
 def update_test_case(tc_id: int, req: TCUpdate, user=Depends(_current_user)):
     conn = get_db()
-    tc = conn.execute("SELECT project_id FROM test_cases WHERE id=?", (tc_id,)).fetchone()
+    tc = conn.execute("SELECT project_id, tc_code, source_path FROM test_cases WHERE id=?",
+                      (tc_id,)).fetchone()
     if not tc:
         conn.close()
         raise HTTPException(404)
-    role = _get_project_role(tc["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
+    try:
+        _require_cap(tc["project_id"], user, "edit")
+    except HTTPException:
         conn.close()
-        raise HTTPException(403)
+        raise
     for field, val in [("name", req.name), ("description", req.description),
                        ("suite_path", req.suite_path), ("extra_args", req.extra_args),
                        # normalised so filtering stays exact regardless of how
@@ -1434,26 +1746,33 @@ def update_test_case(tc_id: int, req: TCUpdate, user=Depends(_current_user)):
     conn.commit()
     row = conn.execute("SELECT * FROM test_cases WHERE id=?", (tc_id,)).fetchone()
     conn.close()
+    audit(user, "tc.update", project_id=tc["project_id"], target=tc["tc_code"],
+          fields=[f for f in ("name", "description", "suite_path", "extra_args", "tags")
+                  if getattr(req, f) is not None],
+          git_synced=bool(tc["source_path"]))
     return row_to_dict(row)
 
 
 @app.delete("/api/test-cases/{tc_id}")
 def delete_test_case(tc_id: int, user=Depends(_current_user)):
     conn = get_db()
-    tc = conn.execute("SELECT project_id FROM test_cases WHERE id=?", (tc_id,)).fetchone()
+    tc = conn.execute("SELECT project_id, tc_code FROM test_cases WHERE id=?",
+                      (tc_id,)).fetchone()
     if not tc:
         conn.close()
         raise HTTPException(404)
-    role = _get_project_role(tc["project_id"], user["username"], user["role"])
-    if role not in ("project_admin",) and user["role"] != "admin":
+    try:
+        _require_cap(tc["project_id"], user, "manage")
+    except HTTPException:
         conn.close()
-        raise HTTPException(403, "project_admin required to delete test cases")
+        raise
     # Detach run history — test_run_items.test_case_id has no ON DELETE clause.
     # tc_code/tc_name are denormalised on the item, so past runs stay readable.
     conn.execute("UPDATE test_run_items SET test_case_id=NULL WHERE test_case_id=?", (tc_id,))
     conn.execute("DELETE FROM test_cases WHERE id=?", (tc_id,))
     conn.commit()
     conn.close()
+    audit(user, "tc.delete", project_id=tc["project_id"], target=tc["tc_code"])
     return {"deleted": tc_id}
 
 
@@ -1503,38 +1822,31 @@ def create_group(project_id: int, req: GroupCreate, user=Depends(_proj_tester)):
     uid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     row = conn.execute("SELECT * FROM test_groups WHERE id=?", (uid,)).fetchone()
     conn.close()
+    audit(user, "suite.create", project_id=project_id, target=req.name)
     return row_to_dict(row)
 
 
 @app.put("/api/groups/{gid}")
 def update_group(gid: int, req: GroupCreate, user=Depends(_current_user)):
     conn = get_db()
-    g = conn.execute("SELECT project_id FROM test_groups WHERE id=?", (gid,)).fetchone()
-    if not g:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(g["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
-        conn.close()
-        raise HTTPException(403)
+    g = _owned_row(conn, "SELECT project_id, name FROM test_groups WHERE id=?",
+                   gid, user, "edit", "Suite not found")
     conn.execute("UPDATE test_groups SET name=?, description=? WHERE id=?",
                  (req.name, req.description, gid))
     conn.commit()
     conn.close()
+    audit(user, "suite.update", project_id=g["project_id"], target=req.name,
+          renamed_from=g["name"] if g["name"] != req.name else None)
     return {"ok": True}
 
 
 @app.delete("/api/groups/{gid}")
 def delete_group(gid: int, user=Depends(_current_user)):
     conn = get_db()
-    g = conn.execute("SELECT project_id FROM test_groups WHERE id=?", (gid,)).fetchone()
-    if not g:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(g["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin") and user["role"] != "admin":
-        conn.close()
-        raise HTTPException(403)
+    # 'edit', not 'manage': testers have always been able to delete a suite, and
+    # a suite carries no history of its own — the runs it produced survive.
+    g = _owned_row(conn, "SELECT project_id, name FROM test_groups WHERE id=?",
+                   gid, user, "edit", "Suite not found")
     # Detach historical runs first — test_runs.group_id has no ON DELETE clause,
     # so the FK would block the delete. Runs keep their own name/stats, so
     # nulling the link preserves history instead of cascading it away.
@@ -1543,6 +1855,7 @@ def delete_group(gid: int, user=Depends(_current_user)):
     conn.execute("DELETE FROM test_groups WHERE id=?", (gid,))
     conn.commit()
     conn.close()
+    audit(user, "suite.delete", project_id=g["project_id"], target=g["name"])
     return {"ok": True}
 
 
@@ -1558,14 +1871,8 @@ def add_tcs_to_group(gid: int, req: GroupTCBulkAdd, user=Depends(_current_user))
     regression pack meant 75 requests and a partially-filled suite if one failed.
     """
     conn = get_db()
-    g = conn.execute("SELECT project_id FROM test_groups WHERE id=?", (gid,)).fetchone()
-    if not g:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(g["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
-        conn.close()
-        raise HTTPException(403)
+    g = _owned_row(conn, "SELECT project_id, name FROM test_groups WHERE id=?",
+                   gid, user, "edit", "Suite not found")
 
     ids = list(dict.fromkeys(req.test_case_ids))       # de-dupe, keep order
     if not ids:
@@ -1598,20 +1905,16 @@ def add_tcs_to_group(gid: int, req: GroupTCBulkAdd, user=Depends(_current_user))
         added += 1
     conn.commit()
     conn.close()
+    audit(user, "suite.add_cases", project_id=g["project_id"], target=g["name"],
+          added=added, requested=len(ids))
     return {"added": added, "skipped_already_present": len(ids) - added}
 
 
 @app.post("/api/groups/{gid}/test-cases")
 def add_tc_to_group(gid: int, req: GroupTCAdd, user=Depends(_current_user)):
     conn = get_db()
-    g = conn.execute("SELECT project_id FROM test_groups WHERE id=?", (gid,)).fetchone()
-    if not g:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(g["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
-        conn.close()
-        raise HTTPException(403)
+    g = _owned_row(conn, "SELECT project_id, name FROM test_groups WHERE id=?",
+                   gid, user, "edit", "Suite not found")
     # The test case must live in the same project as the suite
     owned = conn.execute("SELECT 1 FROM test_cases WHERE id=? AND project_id=?",
                          (req.test_case_id, g["project_id"])).fetchone()
@@ -1624,23 +1927,20 @@ def add_tc_to_group(gid: int, req: GroupTCAdd, user=Depends(_current_user)):
     )
     conn.commit()
     conn.close()
+    audit(user, "suite.add_cases", project_id=g["project_id"], target=g["name"], added=1)
     return {"ok": True}
 
 
 @app.delete("/api/groups/{gid}/test-cases/{tc_id}")
 def remove_tc_from_group(gid: int, tc_id: int, user=Depends(_current_user)):
     conn = get_db()
-    g = conn.execute("SELECT project_id FROM test_groups WHERE id=?", (gid,)).fetchone()
-    if not g:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(g["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
-        conn.close()
-        raise HTTPException(403)
+    g = _owned_row(conn, "SELECT project_id, name FROM test_groups WHERE id=?",
+                   gid, user, "edit", "Suite not found")
     conn.execute("DELETE FROM group_test_cases WHERE group_id=? AND test_case_id=?", (gid, tc_id))
     conn.commit()
     conn.close()
+    audit(user, "suite.remove_case", project_id=g["project_id"], target=g["name"],
+          test_case_id=tc_id)
     return {"ok": True}
 
 
@@ -1710,9 +2010,13 @@ async def trigger_run(project_id: int, req: RunRequest, user=Depends(_proj_teste
         raise HTTPException(400, "No test cases found")
 
     conn.close()
-    return _start_run(project_id, tcs, req.run_name or default_name,
-                      user["username"], req.extra_args, group_id=req.group_id,
-                      parallel=req.parallel)
+    out = _start_run(project_id, tcs, req.run_name or default_name,
+                     user["username"], req.extra_args, group_id=req.group_id,
+                     parallel=req.parallel)
+    audit(user, "run.trigger", project_id=project_id, target=out["run_id"],
+          total=out["total"], group_id=req.group_id, tag=req.tag,
+          parallel=out["parallel"])
+    return out
 
 
 def _start_run(project_id: int, tcs: list, run_name: str, username: str,
@@ -1781,10 +2085,11 @@ async def rerun_failed(run_id: str, req: RerunReq, user=Depends(_current_user)):
         conn.close()
         raise HTTPException(404, "Run not found")
     project_id = tr["project_id"]
-    role = _get_project_role(project_id, user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
+    try:
+        _require_cap(project_id, user, "run")
+    except HTTPException:
         conn.close()
-        raise HTTPException(403)
+        raise
 
     wanted = ["failed"] + (["cancelled"] if req.include_cancelled else [])
     marks = ",".join("?" * len(wanted))
@@ -1803,8 +2108,11 @@ async def rerun_failed(run_id: str, req: RerunReq, user=Depends(_current_user)):
 
     base = tr["run_name"] or run_id
     base = re.sub(r"\s*\(retry \d+\)$", "", base)      # don't stack "(retry 1) (retry 1)"
-    return _start_run(project_id, tcs, f"{base} (retry {len(tcs)})",
-                      user["username"], None, rerun_of=run_id)
+    out = _start_run(project_id, tcs, f"{base} (retry {len(tcs)})",
+                     user["username"], None, rerun_of=run_id)
+    audit(user, "run.rerun_failed", project_id=project_id, target=out["run_id"],
+          rerun_of=run_id, total=out["total"])
+    return out
 
 
 async def _execute_run(run_id: str, project_id: int, items: list, extra_args: Optional[str],
@@ -1824,6 +2132,7 @@ async def _execute_run(run_id: str, project_id: int, items: list, extra_args: Op
         conn.close()
         if run_id in _active_runs:
             _active_runs[run_id]["status"] = "running"
+        _publish(run_id, "summary", {"status": "running"})
         try:
             await _run_suite(run_id, project_id, items, extra_args, parallel)
         finally:
@@ -1930,6 +2239,21 @@ def _norm_tags(raw: str) -> str:
     return f",{','.join(out)}," if out else ""
 
 
+def _split_args(raw: str) -> list:
+    """Split robot arguments, honouring quotes.
+
+    Falls back to a plain split when the string has unbalanced quotes, so a
+    malformed extra_args degrades the way it always did instead of raising and
+    failing the test case outright.
+    """
+    import shlex
+    try:
+        return shlex.split(raw)
+    except ValueError:
+        log.warning("Could not parse extra_args %r — falling back to plain split", raw)
+        return raw.split()
+
+
 def _db_write(statements: list) -> None:
     """Run (sql, params) pairs in one transaction. Blocking — call via to_thread.
 
@@ -1971,6 +2295,9 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
         await asyncio.to_thread(_db_write, [(
             "UPDATE test_run_items SET rf_run_id=?, status='running', started_at=? WHERE id=?",
             (rf_run_id, datetime.now().isoformat(), item_id))])
+        _publish(run_id, "item", {"id": item_id, "tc_code": tc.get("tc_code"),
+                                  "tc_name": tc.get("name"), "status": "running",
+                                  "rf_run_id": rf_run_id})
 
         suite_path = tc.get("suite_path")
         target = suites_dir / suite_path if suite_path else suites_dir
@@ -1985,10 +2312,12 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
             "--variable",   f"RUN_ID:{run_id}",
             "--variable",   f"BSS_ENV:{BSS_ENV}",
         ]
+        # shlex, not str.split: a git-synced case carries --test "Verify Login",
+        # and splitting that on whitespace hands robot two broken fragments.
         if tc.get("extra_args"):
-            cmd.extend(tc["extra_args"].split())
+            cmd.extend(_split_args(tc["extra_args"]))
         if extra_args:
-            cmd.extend(extra_args.split())
+            cmd.extend(_split_args(extra_args))
         cmd.append(str(target))
 
         log_file = item_dir / "console.log"
@@ -2060,6 +2389,13 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
     if run_id in _active_runs:
         _active_runs[run_id]["passed"] = tally["passed"]
         _active_runs[run_id]["failed"] = tally["failed"]
+
+    # One event carries both the case's verdict and the new totals, so a watching
+    # browser needs no follow-up request to redraw the header.
+    _publish(run_id, "item", {
+        "id": item_id, "tc_code": tc.get("tc_code"), "tc_name": tc.get("name"),
+        "status": status, "rf_run_id": rf_run_id, "fail_summary": fail_summary,
+        "passed": tally["passed"], "failed": tally["failed"]})
 
     return str(out_xml) if out_xml.exists() else None
 
@@ -2155,6 +2491,10 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
     log.info("Run finished", extra={"run_id": run_id, "project_id": project_id,
                                     "status": final_status,
                                     "passed": passed, "failed": failed})
+    # 'done' tells each watching browser to close its EventSource — without it
+    # they would hold an idle connection open until the router timed it out.
+    _publish(run_id, "done", {"status": final_status, "passed": passed,
+                              "failed": failed})
 
     # Fire-and-forget: one email for the whole run, never one per failed case.
     # _notify_run_finished swallows everything, so a broken relay cannot turn a
@@ -2318,10 +2658,78 @@ def _reload_all_jobs() -> None:
     """Re-register every scheduled job.
 
     reload_schedules() calls remove_all_jobs(), which would silently delete the
-    digest jobs too. Always go through this so the two cannot drift.
+    digest and maintenance jobs too. Always go through this so they cannot drift.
     """
     reload_schedules(get_db, _trigger_group_run)
     _reload_digests()
+    _reload_sync_jobs()
+    _register_maintenance_job()
+
+
+def _scheduled_tc_sync(project_id: int) -> None:
+    """Automatic reconcile. Runs in an APScheduler worker thread — plain blocking
+    code, no event loop involved."""
+    try:
+        _run_tc_sync(project_id, "scheduler")
+    except Exception as exc:                           # noqa: BLE001
+        log.warning("Scheduled test case sync failed for project %s: %s", project_id, exc)
+
+
+def _reload_sync_jobs() -> None:
+    """Re-register per-project git sync jobs, under their own id prefix."""
+    from scheduler import scheduler
+    try:
+        for job in scheduler.get_jobs():
+            if job.id.startswith("tcsync_"):
+                scheduler.remove_job(job.id)
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT id, sync_cron FROM projects"
+            " WHERE sync_mode='git' AND sync_cron IS NOT NULL AND sync_cron != ''"
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            try:
+                scheduler.add_job(_scheduled_tc_sync, trigger=build_trigger(r["sync_cron"]),
+                                  args=[r["id"]], id=f"tcsync_{r['id']}",
+                                  replace_existing=True)
+            except Exception as exc:                   # noqa: BLE001
+                log.warning("Bad sync cron for project %s: %s", r["id"], exc)
+    except Exception as exc:                           # noqa: BLE001 — never block a save
+        log.warning("Could not reload sync jobs: %s", exc)
+
+
+def _run_maintenance_job() -> None:
+    """Nightly housekeeping. Called by APScheduler from a worker thread.
+
+    VACUUM is suppressed while anything is executing: it takes an exclusive lock
+    for a full file rewrite, and a test finishing during that window would block
+    on its status update long enough to matter.
+    """
+    busy = bool(_active_runs) or bool(_active_procs)
+    res = maintenance.run_maintenance(skip_run_ids=set(_active_runs),
+                                      allow_vacuum=not busy)
+    if res.get("runs", {}).get("runs") or res.get("orphans", {}).get("dirs"):
+        audit("scheduler", "maintenance.purge",
+              runs=res["runs"]["runs"], items=res["runs"]["items"],
+              orphan_dirs=res["orphans"]["dirs"],
+              freed_bytes=res["runs"]["freed_bytes"] + res["orphans"]["freed_bytes"])
+
+
+def _register_maintenance_job() -> None:
+    from scheduler import scheduler
+    try:
+        for job in scheduler.get_jobs():
+            if job.id == "brace_maintenance":
+                scheduler.remove_job(job.id)
+        # The job always runs — the orphan sweep and ANALYZE are useful even with
+        # retention off. Only the run purge is gated on BRACE_RETENTION_DAYS.
+        scheduler.add_job(_run_maintenance_job,
+                          trigger=build_trigger(maintenance.MAINT_CRON),
+                          id="brace_maintenance", replace_existing=True)
+    except Exception as exc:                       # noqa: BLE001 — never block startup
+        log.warning("Could not register the maintenance job (cron %r): %s",
+                    maintenance.MAINT_CRON, exc)
 
 
 def _reload_digests() -> None:
@@ -2351,15 +2759,9 @@ def _reload_digests() -> None:
 # ── Run cancel ───────────────────────────────────────────────────
 @app.post("/api/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, user=Depends(_current_user)):
-    conn  = get_db()
-    tr    = conn.execute("SELECT project_id FROM test_runs WHERE run_id=?", (run_id,)).fetchone()
-    if not tr:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(tr["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin") and user["role"] != "admin":
-        conn.close()
-        raise HTTPException(403)
+    conn = get_db()
+    tr = _owned_row(conn, "SELECT project_id FROM test_runs WHERE run_id=?",
+                    run_id, user, "run", "Run not found")
     # A queued run has no process yet — flag it so it aborts when its slot
     # comes up, instead of starting after the user already cancelled it.
     _cancelled_runs.add(run_id)
@@ -2380,6 +2782,8 @@ async def cancel_run(run_id: str, user=Depends(_current_user)):
     _active_runs.pop(run_id, None)
     _metrics["runs_cancelled"] += 1
     log.info("Run cancelled", extra={"run_id": run_id, "user": user["username"]})
+    audit(user, "run.cancel", project_id=tr["project_id"], target=run_id)
+    _publish(run_id, "done", {"status": "cancelled"})
     return {"cancelled": run_id}
 
 
@@ -2623,9 +3027,7 @@ def report_stats(project_id: int, limit: int = 30,
     }
 
 
-@app.get("/api/runs/{run_id}")
-def get_run(run_id: str, user=Depends(_current_user)):
-    conn = get_db()
+def _run_or_404(conn, run_id: str, user):
     tr = conn.execute("""
         SELECT tr.*, tg.name AS group_name
         FROM test_runs tr LEFT JOIN test_groups tg ON tr.group_id = tg.id
@@ -2634,13 +3036,39 @@ def get_run(run_id: str, user=Depends(_current_user)):
     if not tr:
         conn.close()
         raise HTTPException(404, "Run not found")
-    role = _get_project_role(tr["project_id"], user["username"], user["role"])
-    if not role:
+    if not _get_project_role(tr["project_id"], user["username"], user["role"]):
         conn.close()
         raise HTTPException(403)
+    return tr
+
+
+def _item_files(run_dir, rf_run_id):
+    """(has_log, has_report) for one item. Two stat() calls — only ever done for
+    the page of items actually being returned, never for the whole run."""
+    if not rf_run_id:
+        return False, False
+    d = run_dir / rf_run_id
+    return (d / "log.html").exists(), (d / "report.html").exists()
+
+
+@app.get("/api/runs/{run_id}")
+def get_run(run_id: str, include_items: bool = False, user=Depends(_current_user)):
+    """Run summary + per-status counts.
+
+    Items are NOT included by default. A 1200-case run serialises to ~525 KB
+    with them, and the detail view polls this every 3 s — that was 175 KB/s per
+    viewer just to redraw a progress bar. The UI pages through
+    /api/runs/{id}/items instead. include_items=1 restores the old shape for
+    any external caller that still wants everything in one response.
+    """
+    conn = get_db()
+    tr = _run_or_404(conn, run_id, user)
+    counts = {r["status"]: r["n"] for r in conn.execute(
+        "SELECT status, COUNT(*) AS n FROM test_run_items WHERE run_id=? GROUP BY status",
+        (run_id,)).fetchall()}
     items = conn.execute(
         "SELECT * FROM test_run_items WHERE run_id=? ORDER BY id", (run_id,)
-    ).fetchall()
+    ).fetchall() if include_items else []
     conn.close()
 
     d = dict(tr)
@@ -2650,23 +3078,170 @@ def get_run(run_id: str, user=Depends(_current_user)):
         d["passed"] = live["passed"]
         d["failed"] = live["failed"]
 
-    # Enrich items with file availability
     run_dir = _project_results(tr["project_id"]) / run_id
-    item_list = []
-    for it in items:
-        i = dict(it)
-        if it["rf_run_id"]:
-            item_dir = run_dir / it["rf_run_id"]
-            i["has_log"]    = (item_dir / "log.html").exists()
-            i["has_report"] = (item_dir / "report.html").exists()
-        else:
-            i["has_log"] = i["has_report"] = False
-        item_list.append(i)
-
-    d["items"] = item_list
+    d["status_counts"] = counts
+    d["item_count"]    = sum(counts.values())
+    if include_items:
+        item_list = []
+        for it in items:
+            i = dict(it)
+            i["has_log"], i["has_report"] = _item_files(run_dir, it["rf_run_id"])
+            item_list.append(i)
+        d["items"] = item_list
     d["has_combined_report"] = (run_dir / "combined" / "report.html").exists()
     d["has_combined_log"]    = (run_dir / "combined" / "log.html").exists()
     return d
+
+
+# Columns the list view needs. fail_detail is deliberately absent — it is the
+# bulk of the payload (stack traces, page source) and is only ever read for the
+# one row a user expands, which /items/{item_id} serves.
+_ITEM_LIST_COLS = ("id, test_case_id, tc_code, tc_name, status, rf_run_id, "
+                   "started_at, finished_at, fail_summary")
+
+
+@app.get("/api/runs/{run_id}/items")
+def get_run_items(run_id: str,
+                  status: str = "",
+                  q: str = "",
+                  offset: int = 0,
+                  limit: int = 50,
+                  user=Depends(_current_user)):
+    """One page of a run's test cases, filtered by status and free text."""
+    limit  = max(1, min(500, limit))
+    offset = max(0, offset)
+    conn = get_db()
+    tr = _run_or_404(conn, run_id, user)
+
+    where, params = ["run_id=?"], [run_id]
+    if status:
+        marks = ",".join("?" for _ in status.split(","))
+        where.append(f"status IN ({marks})")
+        params += [s.strip() for s in status.split(",")]
+    if q.strip():
+        where.append("(tc_code LIKE ? OR tc_name LIKE ? OR fail_summary LIKE ?)")
+        params += [f"%{q.strip()}%"] * 3
+    clause = " AND ".join(where)
+
+    total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM test_run_items WHERE {clause}", params
+    ).fetchone()["n"]
+    rows = conn.execute(
+        f"SELECT {_ITEM_LIST_COLS} FROM test_run_items WHERE {clause} "
+        f"ORDER BY id LIMIT ? OFFSET ?", params + [limit, offset]
+    ).fetchall()
+    conn.close()
+
+    run_dir = _project_results(tr["project_id"]) / run_id
+    out = []
+    for r in rows:
+        i = dict(r)
+        i["has_log"], i["has_report"] = _item_files(run_dir, r["rf_run_id"])
+        out.append(i)
+    return {"total": total, "offset": offset, "limit": limit, "items": out}
+
+
+@app.get("/api/runs/{run_id}/items/{item_id}")
+def get_run_item(run_id: str, item_id: int, user=Depends(_current_user)):
+    """Full detail for one test case, including the failure text and screenshot."""
+    conn = get_db()
+    tr = _run_or_404(conn, run_id, user)
+    row = conn.execute(
+        "SELECT * FROM test_run_items WHERE run_id=? AND id=?", (run_id, item_id)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Test case not found in this run")
+    i = dict(row)
+    i["has_log"], i["has_report"] = _item_files(
+        _project_results(tr["project_id"]) / run_id, row["rf_run_id"])
+    return i
+
+
+@app.get("/api/runs/{run_id}/events")
+async def stream_run_events(run_id: str, request: Request, token: str = "",
+                            user=Depends(oauth2_scheme)):
+    """Server-sent events for one run: status, per-case verdicts, completion.
+
+    EventSource cannot set an Authorization header, so the token also comes in
+    as a query parameter — the same accommodation the results route already
+    makes for <img> and <iframe>.
+
+    Replaces polling while a run is live. The 3s poll re-queried the whole run
+    for every watcher; this pushes ~100 bytes per case as it finishes.
+    """
+    raw = token or user
+    if not raw:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        payload = jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        who = {"username": payload["sub"], "role": payload.get("role", "user")}
+    except JWTError:
+        raise HTTPException(401, "Invalid or expired token")
+
+    conn = get_db()
+    tr = conn.execute("SELECT project_id, status, passed, failed, total"
+                      " FROM test_runs WHERE run_id=?", (run_id,)).fetchone()
+    if not tr:
+        conn.close()
+        raise HTTPException(404, "Run not found")
+    if not _get_project_role(tr["project_id"], who["username"], who["role"]):
+        conn.close()
+        raise HTTPException(403)
+    counts = {r["status"]: r["n"] for r in conn.execute(
+        "SELECT status, COUNT(*) AS n FROM test_run_items WHERE run_id=? GROUP BY status",
+        (run_id,)).fetchall()}
+    conn.close()
+
+    subs = _run_subs.setdefault(run_id, set())
+    if len(subs) >= SSE_MAX_SUBS:
+        # Not an error: the client falls back to polling, which still works.
+        raise HTTPException(503, "Too many live watchers for this run")
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+    subs.add(queue)
+
+    def _sse(event: str, data: dict) -> str:
+        import json as _json
+        return f"event: {event}\ndata: {_json.dumps(data, default=str)}\n\n"
+
+    async def generate():
+        try:
+            live = _active_runs.get(run_id)
+            yield _sse("summary", {
+                "status": (live or tr)["status"], "passed": (live or tr)["passed"],
+                "failed": (live or tr)["failed"], "total": tr["total"],
+                "status_counts": counts})
+            # A run that already finished gets one summary and an immediate
+            # 'done' — no connection is left hanging for a run nothing will
+            # ever publish to again.
+            if tr["status"] not in ("running", "queued"):
+                yield _sse("done", {"status": tr["status"]})
+                return
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    event, data = await asyncio.wait_for(queue.get(),
+                                                         timeout=SSE_HEARTBEAT_SEC)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"     # comment frame; ignored by EventSource
+                    continue
+                yield _sse(event, data)
+                if event == "done":
+                    return
+        finally:
+            # Always unsubscribe — a leaked queue would keep _publish fanning
+            # out to a client that disconnected hours ago.
+            subs.discard(queue)
+            if not subs:
+                _run_subs.pop(run_id, None)
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection":    "keep-alive",
+        # nginx/OCP router buffering would defeat the entire point of streaming.
+        "X-Accel-Buffering": "no",
+    })
 
 
 @app.get("/api/runs/{run_id}/log")
@@ -3110,6 +3685,10 @@ def put_smtp_config(req: SmtpConfigReq, user=Depends(_require_sys_admin)):
     conn.commit()
     conn.close()
     log.info("SMTP config updated", extra={"user": user["username"]})
+    audit(user, "smtp.update", target=req.host or cur.get("host"),
+          enabled=req.enabled, security=sec,
+          # The value never reaches the log — only whether it was replaced.
+          password=bool(req.password))
     return get_smtp_config(user)
 
 
@@ -3145,6 +3724,7 @@ async def test_smtp_config(req: SmtpTestReq, user=Depends(_require_sys_admin)):
     except Exception as exc:                       # noqa: BLE001 — reported to the user
         log.warning("SMTP test failed: %s", type(exc).__name__)
         raise HTTPException(400, mailer.friendly_error(exc))
+    audit(user, "smtp.test", recipients=len(to))
     return {"ok": True, "sent_to": to}
 
 
@@ -3226,6 +3806,9 @@ def put_notify_config(project_id: int, req: NotifyConfigReq, user=Depends(_proj_
     conn.commit()
     conn.close()
     _reload_digests()
+    audit(user, "notify.update", project_id=project_id, enabled=req.enabled,
+          recipients=len(mailer.parse_recipients(req.recipients or "")),
+          weekly_digest=req.weekly_digest)
     return get_notify_config(project_id, user)
 
 
@@ -3263,6 +3846,8 @@ def put_ai_config(req: AIConfigReq, user=Depends(_require_sys_admin)):
     conn.commit()
     saved = conn.execute("SELECT enabled, api_key FROM ai_config WHERE id=1").fetchone()
     conn.close()
+    audit(user, "ai.config_update", enabled=req.enabled, model=req.model,
+          api_base=req.api_base, api_key=bool(req.api_key))
     # Echo back what actually landed, so the UI never reports a save that didn't happen
     return {"ok": True,
             "enabled": bool(saved["enabled"]),
@@ -3307,9 +3892,7 @@ def test_ai_config(user=Depends(_require_sys_admin)):
 # ══════════════════════════════════════════════════════════════════
 
 def _require_proj_admin(project_id: int, user: dict) -> None:
-    role = _get_project_role(project_id, user["username"], user["role"])
-    if role != "project_admin" and user["role"] != "admin":
-        raise HTTPException(403, "project_admin required")
+    _require_cap(project_id, user, "manage")
 
 
 @app.get("/api/projects/{project_id}/data-summary")
@@ -3472,6 +4055,8 @@ def purge_runs(project_id: int, keep_last: int = 0, user=Depends(_current_user))
         if d.exists() and d.is_dir():
             freed += sum(p.stat().st_size for p in d.rglob("*") if p.is_file())
             shutil.rmtree(d, ignore_errors=True)
+    audit(user, "data.purge_runs", project_id=project_id,
+          deleted=len(run_ids), keep_last=keep_last, freed_bytes=freed)
     return {"deleted_runs": len(run_ids), "freed_bytes": freed, "skipped_active": skipped}
 
 
@@ -3488,6 +4073,7 @@ def purge_test_cases(project_id: int, user=Depends(_current_user)):
         conn.execute("DELETE FROM test_cases WHERE project_id=?", (project_id,))
     conn.commit()
     conn.close()
+    audit(user, "data.purge_test_cases", project_id=project_id, deleted=len(ids))
     return {"deleted_test_cases": len(ids)}
 
 
@@ -3505,6 +4091,7 @@ def purge_suites(project_id: int, user=Depends(_current_user)):
         conn.execute("DELETE FROM test_groups WHERE project_id=?", (project_id,))
     conn.commit()
     conn.close()
+    audit(user, "data.purge_suites", project_id=project_id, deleted=len(ids))
     return {"deleted_suites": len(ids)}
 
 
@@ -3579,20 +4166,16 @@ def create_schedule(project_id: int, req: ScheduleCreate, user=Depends(_proj_tes
     sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.close()
     _reload_all_jobs()
+    audit(user, "schedule.create", project_id=project_id, target=str(sid),
+          cron=req.cron_expr, group_id=req.group_id)
     return {"id": sid, "cron_expr": req.cron_expr}
 
 
 @app.put("/api/schedules/{sid}")
 def update_schedule(sid: int, req: ScheduleUpdate, user=Depends(_current_user)):
     conn = get_db()
-    s = conn.execute("SELECT project_id FROM schedules WHERE id=?", (sid,)).fetchone()
-    if not s:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(s["project_id"], user["username"], user["role"])
-    if role not in ("tester", "project_admin"):
-        conn.close()
-        raise HTTPException(403)
+    s = _owned_row(conn, "SELECT project_id FROM schedules WHERE id=?",
+                   sid, user, "edit", "Schedule not found")
     if req.cron_expr:
         try:
             build_trigger(req.cron_expr)
@@ -3605,24 +4188,22 @@ def update_schedule(sid: int, req: ScheduleUpdate, user=Depends(_current_user)):
     conn.commit()
     conn.close()
     _reload_all_jobs()
+    audit(user, "schedule.update", project_id=s["project_id"], target=str(sid),
+          cron=req.cron_expr, enabled=req.enabled)
     return {"ok": True}
 
 
 @app.delete("/api/schedules/{sid}")
 def delete_schedule(sid: int, user=Depends(_current_user)):
     conn = get_db()
-    s = conn.execute("SELECT project_id FROM schedules WHERE id=?", (sid,)).fetchone()
-    if not s:
-        conn.close()
-        raise HTTPException(404)
-    role = _get_project_role(s["project_id"], user["username"], user["role"])
-    if role not in ("project_admin",) and user["role"] != "admin":
-        conn.close()
-        raise HTTPException(403)
+    s = _owned_row(conn, "SELECT project_id, cron_expr FROM schedules WHERE id=?",
+                   sid, user, "manage", "Schedule not found")
     conn.execute("DELETE FROM schedules WHERE id=?", (sid,))
     conn.commit()
     conn.close()
     _reload_all_jobs()
+    audit(user, "schedule.delete", project_id=s["project_id"], target=str(sid),
+          cron=s["cron_expr"])
     return {"ok": True}
 
 
@@ -3658,6 +4239,81 @@ def _trigger_group_run(group_id: int):
         lambda: _start_run(g["project_id"], tcs, f"Scheduled: {g['name']}",
                            "scheduler", None, group_id=group_id))
     log.info("Scheduled run queued for suite '%s' (%d test cases).", g["name"], len(tcs))
+
+
+# ══════════════════════════════════════════════════════════════════
+# HOUSEKEEPING + AUDIT (admin)
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/api/admin/maintenance")
+def get_maintenance(user=Depends(_require_sys_admin)):
+    """Retention settings, current disk usage, and the last job's outcome."""
+    return {"config": maintenance.config(),
+            "disk":   maintenance.disk_usage(),
+            "last":   maintenance.last_result(),
+            "busy":   bool(_active_runs) or bool(_active_procs)}
+
+
+@app.post("/api/admin/maintenance/run")
+async def run_maintenance_now(dry_run: bool = True, user=Depends(_require_sys_admin)):
+    """Run housekeeping on demand.
+
+    Defaults to dry_run=True. Deleting run history is irreversible, so the
+    caller has to ask for it explicitly — the UI shows what a dry run found and
+    makes the operator confirm before the real thing.
+    """
+    busy = bool(_active_runs) or bool(_active_procs)
+    # Blocking: rmtree over thousands of files, plus possibly a VACUUM.
+    res = await asyncio.to_thread(maintenance.run_maintenance,
+                                  set(_active_runs), not busy, dry_run)
+    if not dry_run:
+        audit(user, "maintenance.run_now",
+              runs=res.get("runs", {}).get("runs", 0),
+              orphan_dirs=res.get("orphans", {}).get("dirs", 0),
+              freed_bytes=(res.get("runs", {}).get("freed_bytes", 0)
+                           + res.get("orphans", {}).get("freed_bytes", 0)))
+    return res
+
+
+@app.get("/api/admin/audit")
+def list_audit(username: str = "", action: str = "", project_id: int = 0,
+               date_from: str = "", date_to: str = "",
+               offset: int = 0, limit: int = 50,
+               user=Depends(_require_sys_admin)):
+    """Paged, filtered audit trail. Admin only — it names who did what."""
+    limit  = max(1, min(500, limit))
+    offset = max(0, offset)
+    where, params = [], []
+    if username:
+        where.append("username=?");   params.append(username)
+    if action:
+        # 'run' matches run.trigger, run.cancel … — prefix, not substring, so a
+        # filter cannot accidentally span unrelated action families.
+        where.append("(action=? OR action LIKE ?)"); params += [action, f"{action}.%"]
+    if project_id:
+        where.append("project_id=?"); params.append(project_id)
+    if date_from:
+        where.append("substr(ts,1,10) >= ?"); params.append(date_from[:10])
+    if date_to:
+        where.append("substr(ts,1,10) <= ?"); params.append(date_to[:10])
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    conn = get_db()
+    try:
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM audit_log{clause}",
+                             params).fetchone()["n"]
+        rows = rows_to_list(conn.execute(
+            f"SELECT * FROM audit_log{clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset]).fetchall())
+        # Distinct values for the filter dropdowns — cheap, both are indexed.
+        users   = [r[0] for r in conn.execute(
+            "SELECT DISTINCT username FROM audit_log ORDER BY username").fetchall() if r[0]]
+        actions = [r[0] for r in conn.execute(
+            "SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall() if r[0]]
+    finally:
+        conn.close()
+    return {"total": total, "offset": offset, "limit": limit, "entries": rows,
+            "usernames": users, "actions": actions}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3729,11 +4385,26 @@ def metrics():
         db_bytes = -1
     emit("brace_database_bytes", "gauge", "Size of the SQLite database file.", db_bytes)
 
+    emit("brace_retention_days", "gauge",
+         "Configured run retention in days; 0 means keep forever.",
+         maintenance.RETENTION_DAYS)
+    _last = maintenance.last_result()
+    if _last:
+        emit("brace_maintenance_last_runs_purged", "gauge",
+             "Runs deleted by the most recent housekeeping job.",
+             _last.get("runs", {}).get("runs", 0))
+        emit("brace_maintenance_last_freed_bytes", "gauge",
+             "Bytes reclaimed by the most recent housekeeping job.",
+             _last.get("runs", {}).get("freed_bytes", 0)
+             + _last.get("orphans", {}).get("freed_bytes", 0))
+
     try:
         conn = get_db()
         for name, sql in (("projects",   "SELECT COUNT(*) FROM projects"),
                           ("test_cases", "SELECT COUNT(*) FROM test_cases"),
-                          ("runs",       "SELECT COUNT(*) FROM test_runs")):
+                          ("runs",       "SELECT COUNT(*) FROM test_runs"),
+                          # The table that actually drives DB growth — runs x cases.
+                          ("run_items",  "SELECT COUNT(*) FROM test_run_items")):
             emit(f"brace_{name}_count", "gauge", f"Rows in {name}.",
                  conn.execute(sql).fetchone()[0])
         conn.close()

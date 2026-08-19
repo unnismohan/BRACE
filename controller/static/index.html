@@ -183,8 +183,9 @@
       <div class="page-hdr" style="margin-bottom:0">
         <h2 id="proj-title">—</h2>
         <div class="spacer"></div>
-        <button class="btn btn-a btn-sm" onclick="openRunModal()">▶ Run</button>
+        <button data-cap="run" class="btn btn-a btn-sm" onclick="openRunModal()">▶ Run</button>
       </div>
+      <div id="role-note" class="role-note" style="display:none"></div>
 
       <div id="proj-tabs">
         <button class="tab-btn active" onclick="switchTab('scripts')"  id="tabt-scripts">Scripts</button>
@@ -290,9 +291,9 @@
       <!-- TEST CASES -->
       <div class="tab-pane" id="tab-cases">
         <div class="bgrp" style="margin-bottom:12px">
-          <button class="btn btn-p btn-sm" onclick="openNewTCModal()">＋ Add TC</button>
-          <button class="btn btn-o btn-sm" onclick="showModal('modal-bulktc')">⬆ Bulk CSV</button>
-          <button class="btn btn-a btn-sm" id="btn-runsel" onclick="runSelectedTCs()" style="display:none">▶ Run Selected</button>
+          <button data-cap="edit" class="btn btn-p btn-sm" onclick="openNewTCModal()">＋ Add TC</button>
+          <button data-cap="edit" class="btn btn-o btn-sm" onclick="showModal('modal-bulktc')">⬆ Bulk CSV</button>
+          <button data-cap="run" class="btn btn-a btn-sm" id="btn-runsel" onclick="runSelectedTCs()" style="display:none">▶ Run Selected</button>
         </div>
         <div class="filterbar">
           <span class="fb-search">
@@ -330,7 +331,7 @@
       <!-- SUITES/GROUPS -->
       <div class="tab-pane" id="tab-groups">
         <div class="bgrp" style="margin-bottom:12px;align-items:center">
-          <button class="btn btn-p btn-sm" onclick="showModal('modal-newgrp')">＋ New Suite</button>
+          <button data-cap="edit" class="btn btn-p btn-sm" onclick="showModal('modal-newgrp')">＋ New Suite</button>
           <span id="grp-toolbar" style="display:none;gap:6px;margin-left:auto">
             <button class="btn btn-o btn-sm" onclick="expandAllGroups(true)">⊞ Expand All</button>
             <button class="btn btn-o btn-sm" onclick="expandAllGroups(false)">⊟ Collapse All</button>
@@ -342,7 +343,7 @@
       <!-- RUNS -->
       <div class="tab-pane" id="tab-runs">
         <div class="bgrp" style="margin-bottom:12px">
-          <button class="btn btn-a btn-sm" onclick="openRunModal()">▶ Trigger Run</button>
+          <button data-cap="run" class="btn btn-a btn-sm" onclick="openRunModal()">▶ Trigger Run</button>
         </div>
         <div class="filterbar">
           <span class="fb-search">
@@ -538,7 +539,7 @@
             <div class="fr"><label>Name</label><input id="s-name" type="text"></div>
             <div class="fr"><label>Description</label><textarea id="s-desc" rows="3"></textarea></div>
             <div class="sec-foot">
-              <button class="btn btn-p btn-sm" onclick="saveProjSettings()">Save</button>
+              <button data-cap="manage" class="btn btn-p btn-sm" onclick="saveProjSettings()">Save</button>
             </div>
           </div>
 
@@ -554,15 +555,43 @@
               <input id="s-gittoken" type="password" placeholder="••••••••">
             </div>
             <div class="sec-foot">
-              <button class="btn btn-p btn-sm" onclick="saveGitConfig()">Save Git Config</button>
-              <button class="btn btn-o btn-sm" onclick="switchTab('scripts');gitSync()">↻ Sync Now</button>
+              <button data-cap="manage" class="btn btn-p btn-sm" onclick="saveGitConfig()">Save Git Config</button>
+              <button data-cap="edit" class="btn btn-o btn-sm" onclick="switchTab('scripts');gitSync()">↻ Sync Now</button>
             </div>
+          </div>
+
+          <div class="asection">
+            <h3>🔗 Test Cases from Git</h3>
+            <p class="sec-note">
+              In <b>git mode</b> the repository decides which test cases exist: every test in a
+              <code>Testcases</code> folder becomes a BRACE test case, and its <code>[Tags]</code>
+              and <code>[Documentation]</code> come from the file. Run history is kept, and test
+              cases you created by hand are never touched.
+            </p>
+            <div class="fr">
+              <label>Mode</label>
+              <select id="sy-mode">
+                <option value="manual">Manual — test cases are managed in BRACE</option>
+                <option value="git">Git — the repository is the source of truth</option>
+              </select>
+            </div>
+            <div class="fr">
+              <label>Automatic sync <span style="color:var(--c-muted);font-weight:400">(optional cron, blank = only on demand)</span></label>
+              <input id="sy-cron" type="text" placeholder="0 6 * * *" style="max-width:180px">
+              <div class="fhint" id="sy-cron-desc"></div>
+            </div>
+            <div class="sec-foot">
+              <button data-cap="manage" class="btn btn-p btn-sm" onclick="saveSyncConfig()">Save</button>
+              <button data-cap="edit" class="btn btn-o btn-sm" onclick="runTcSync(true)">🔍 Preview</button>
+              <button data-cap="edit" class="btn btn-a btn-sm" onclick="runTcSync(false)">↻ Sync Test Cases</button>
+            </div>
+            <div id="sy-status" style="margin-top:10px;font-size:12.5px;line-height:1.6"></div>
           </div>
 
           <div class="asection">
             <div class="sec-hd">
               <h3>⏰ Schedules</h3>
-              <button class="btn btn-p btn-sm" onclick="openSchedModal()">＋ New Schedule</button>
+              <button data-cap="edit" class="btn btn-p btn-sm" onclick="openSchedModal()">＋ New Schedule</button>
             </div>
             <p class="sec-note">
               Run a suite automatically on a cron schedule. Times are interpreted in
@@ -605,7 +634,7 @@
               </div>
             </div>
             <div class="bgrp">
-              <button class="btn btn-p btn-sm" onclick="saveNotifyConfig()">Save Notifications</button>
+              <button data-cap="manage" class="btn btn-p btn-sm" onclick="saveNotifyConfig()">Save Notifications</button>
             </div>
             <div id="nt-status" style="margin-top:10px;font-size:12.5px"></div>
           </div>
@@ -627,7 +656,7 @@
                 <span class="fb-search" style="flex:0 1 220px">
                   <input id="mem-search" type="text" placeholder="Filter members…" oninput="renderMembers()">
                 </span>
-                <button class="btn btn-p btn-sm" onclick="openAddMemberModal()">＋ Add Member</button>
+                <button data-cap="manage" class="btn btn-p btn-sm" onclick="openAddMemberModal()">＋ Add Member</button>
               </div>
             </div>
             <div class="tbl-wrap mem-scroll">
@@ -755,6 +784,49 @@
           <div id="smtp-status" style="margin-top:10px;font-size:12.5px;line-height:1.6"></div>
           <div id="smtp-url-warn" class="fhint" style="margin-top:8px"></div>
         </div>
+      </div>
+
+      <!-- Housekeeping: retention, orphan sweep, SQLite maintenance -->
+      <div class="asection">
+        <div class="sec-hd"><h3>🧹 Housekeeping</h3></div>
+        <p style="font-size:12.5px;color:var(--c-muted);margin-bottom:14px;max-width:760px">
+          The database grows by runs × test cases, and every case leaves a log and a report
+          on disk. Retention deletes runs past a cut-off; the nightly job also reclaims
+          orphaned result folders and compacts the database.
+        </p>
+        <div id="hk-body"></div>
+        <div class="bgrp" style="margin-top:12px">
+          <button class="btn btn-o btn-sm" onclick="runHousekeeping(true)">🔍 Preview (dry run)</button>
+          <button class="btn btn-a btn-sm" onclick="runHousekeeping(false)">🧹 Run Now</button>
+        </div>
+        <div id="hk-status" style="margin-top:10px;font-size:12.5px;line-height:1.6"></div>
+      </div>
+
+      <!-- Audit log -->
+      <div class="asection">
+        <div class="sec-hd">
+          <h3>📜 Audit Log <span class="sec-count" id="audit-count"></span></h3>
+          <button class="btn btn-o btn-sm" onclick="loadAudit(true)">↻ Refresh</button>
+        </div>
+        <p style="font-size:12.5px;color:var(--c-muted);margin-bottom:12px;max-width:760px">
+          Every change made through BRACE — runs started, test cases and suites edited,
+          schedules and settings changed, members and roles altered. Reads are not recorded,
+          and passwords, tokens and API keys are recorded as changed, never as their value.
+        </p>
+        <div class="rd-bar" style="border-top:none;padding-top:0">
+          <select id="audit-user" onchange="loadAudit(true)" style="max-width:180px"></select>
+          <select id="audit-action" onchange="loadAudit(true)" style="max-width:200px"></select>
+          <input id="audit-from" type="date" onchange="loadAudit(true)" style="max-width:150px">
+          <input id="audit-to"   type="date" onchange="loadAudit(true)" style="max-width:150px">
+          <button class="btn btn-o btn-sm" onclick="clearAuditFilters()">Clear</button>
+        </div>
+        <div class="tbl-wrap">
+          <table><thead><tr>
+            <th style="width:150px">When</th><th style="width:120px">Who</th>
+            <th style="width:170px">Action</th><th style="width:160px">Target</th><th>Detail</th>
+          </tr></thead><tbody id="audit-tbody"></tbody></table>
+        </div>
+        <div id="audit-more"></div>
       </div>
     </div>
 

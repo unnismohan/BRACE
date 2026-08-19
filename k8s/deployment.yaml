@@ -55,7 +55,7 @@ spec:
 
       containers:
         - name: rf-controller
-          image: registry.example.com/brace/brace-runner-hardened:2.1.3
+          image: registry.example.com/brace/brace-runner-hardened:2.2.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -73,7 +73,7 @@ spec:
             # Surfaced by /health and the startup log — keep in step with the
             # image tag above so you can confirm which build is actually live.
             - name: IMAGE_TAG
-              value: "2.1.3"
+              value: "2.2.0"
             - name: CONFIG_DIR
               value: /opt/rf/config
             # ── Execution capacity ──────────────────────────────────────
@@ -102,6 +102,33 @@ spec:
             # so a log stack can index and correlate them. Use "text" for humans.
             - name: BRACE_LOG_FORMAT
               value: "json"
+            # ── Housekeeping ────────────────────────────────────────────
+            # Delete runs finished more than this many days ago, with their
+            # reports and logs. 0 = keep forever, which is the built-in default:
+            # the value below is a deliberate choice, not an accident of upgrade.
+            # The database grows by (runs x test cases) and each case also leaves
+            # a log.html and report.html on the results volume, so on a nightly
+            # 1000-case suite this is what stops the volume filling silently.
+            - name: BRACE_RETENTION_DAYS
+              value: "90"
+            # Floor: never purge below this many runs per project, however old.
+            # A project that runs monthly keeps its history regardless.
+            - name: BRACE_RETENTION_KEEP_MIN
+              value: "20"
+            # Audit rows are tiny; keep them far longer than run data.
+            - name: BRACE_AUDIT_RETENTION_DAYS
+              value: "365"
+            # When the nightly purge, orphan sweep and database compaction run.
+            # Read in BRACE_SCHEDULER_TZ. Pick a quiet hour — VACUUM is skipped
+            # automatically while anything is executing, but the file walk is
+            # still I/O on the results volume.
+            - name: BRACE_MAINT_CRON
+              value: "30 2 * * *"
+            # Live run updates are pushed over SSE instead of polled. This caps
+            # concurrent watchers per run; past it a browser falls back to
+            # polling, which still works.
+            - name: BRACE_SSE_MAX_SUBS
+              value: "20"
             # The container's own clock. Timestamps are written using local time
             # and the UI shows them as stored, so an unset TZ means the container
             # runs in UTC and every time in the UI reads 5h30m behind for an IST

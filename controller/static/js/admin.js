@@ -364,6 +364,72 @@ async function saveGitConfig() {
   } catch(e) { toast(e.message,'e'); }
 }
 
+// ── Git-native test cases ──────────────────────────────
+async function loadSyncConfig() {
+  const el = document.getElementById('sy-status');
+  if (!el) return;
+  try {
+    const c = await api('GET', `/projects/${_curProj.id}/sync-config`);
+    document.getElementById('sy-mode').value = c.sync_mode || 'manual';
+    document.getElementById('sy-cron').value = c.sync_cron || '';
+    document.getElementById('sy-cron-desc').textContent =
+      c.sync_cron ? cronDescribe(c.sync_cron) : '';
+    const k = c.counts || {};
+    el.innerHTML = `
+      <span style="color:var(--c-muted)">
+        ${k.synced || 0} of ${k.total || 0} test case(s) come from the repository${
+          k.missing ? ` · <b style="color:#b45309">${k.missing} no longer in the repo</b>` : ''}.
+        ${c.last_sync_at ? `Last synced ${esc(c.last_sync_at.replace('T',' '))}.` : 'Never synced.'}
+      </span>
+      ${!c.has_git ? `<div class="fhint" style="color:#b45309">No git repository configured
+         for this project — sync reads the .robot files already in the suites folder.</div>` : ''}`;
+  } catch(e) { el.innerHTML = `<span style="color:var(--c-muted)">${esc(e.message)}</span>`; }
+}
+
+async function saveSyncConfig() {
+  try {
+    await api('PUT', `/projects/${_curProj.id}/sync-config`, {
+      sync_mode: document.getElementById('sy-mode').value,
+      sync_cron: document.getElementById('sy-cron').value.trim() || null,
+    });
+    toast('Saved','s');
+    loadSyncConfig();
+  } catch(e) { toast(e.message,'e'); }
+}
+
+async function runTcSync(dry) {
+  const el = document.getElementById('sy-status');
+  el.innerHTML = dry ? 'Reading the repository…' : 'Syncing…';
+  try {
+    const r = await api('POST', `/projects/${_curProj.id}/sync?dry_run=${dry ? 'true' : 'false'}`);
+    const s = r.summary;
+    el.innerHTML = `<span style="color:${dry ? 'var(--c-muted)' : '#15803d'}">
+        ${dry ? '<b>Preview</b> — nothing was written.' : '<b>Synced.</b>'}
+        Parsed <b>${s.parsed}</b> test(s) — added <b>${s.added}</b>,
+        updated <b>${s.updated}</b>, unchanged <b>${s.unchanged}</b>,
+        no longer in the repo <b>${s.missing}</b>.
+      </span>
+      ${syncDetail('Added', r.added, t => `${t.tc_code} — ${t.name}`)}
+      ${syncDetail('Updated', r.updated, t => `${t.tc_code} — ${t.name} (${t.fields.join(', ')})`)}
+      ${syncDetail('Missing from the repo', r.missing, t => `${t.tc_code} — ${t.name}`)}
+      ${r.duplicates && r.duplicates.length ? `<div class="fhint" style="color:#b91c1c">
+        Duplicate <code>braceid:</code> tags in the repository — these tests were skipped:
+        ${esc(r.duplicates.map(d => d.braceid + ' (' + d.tests.join(', ') + ')').join('; '))}</div>` : ''}
+      ${r.errors && r.errors.length ? `<div class="fhint" style="color:#b45309">
+        ${r.errors.length} file(s) could not be parsed: ${esc(r.errors.slice(0,3).join('; '))}</div>` : ''}`;
+    if (!dry) { loadSyncConfig(); if (_curTab === 'cases') loadTCs(); }
+  } catch(e) { el.innerHTML = `<span style="color:#b91c1c">${esc(e.message)}</span>`; }
+}
+
+// Long lists get truncated — a first sync of a big repo reports hundreds of
+// additions and the point of the panel is the summary, not the enumeration.
+function syncDetail(label, rows, fmt) {
+  if (!rows || !rows.length) return '';
+  const shown = rows.slice(0, 8).map(fmt).map(esc).join('<br>');
+  return `<div class="fhint" style="margin-top:6px"><b>${label}:</b><br>${shown}${
+    rows.length > 8 ? `<br>…and ${rows.length - 8} more` : ''}</div>`;
+}
+
 let _members = [];
 
 async function loadMembers() {
@@ -499,7 +565,156 @@ function openAdmin() {
   showView('admin');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('admin-navitem').classList.add('active');
-  loadUsers(); loadAIConfig(); loadSmtpConfig();
+  loadUsers(); loadAIConfig(); loadSmtpConfig(); loadHousekeeping(); loadAudit(true);
+}
+
+// ── Housekeeping ───────────────────────────────────────
+// Retention is env-driven, so this card reports rather than edits: an operator
+// who can change BRACE_RETENTION_DAYS is changing the Deployment, and a value
+// editable in two places would drift.
+async function loadHousekeeping() {
+  const box = document.getElementById('hk-body');
+  if (!box) return;
+  try {
+    const h = await api('GET', '/admin/maintenance');
+    const c = h.config, d = h.disk, last = h.last;
+    box.innerHTML = `
+      <div class="hk-grid">
+        <div class="hk-stat"><span class="hk-lbl">Database</span><b>${fmtBytes(d.db_bytes)}</b></div>
+        <div class="hk-stat"><span class="hk-lbl">Results on disk</span><b>${fmtBytes(d.results_bytes)}</b></div>
+        <div class="hk-stat"><span class="hk-lbl">Retention</span><b>${
+          c.enabled ? c.retention_days + ' days' : 'off — keep forever'}</b></div>
+        <div class="hk-stat"><span class="hk-lbl">Always keep</span><b>${c.retention_keep_min} runs/project</b></div>
+        <div class="hk-stat"><span class="hk-lbl">Nightly job</span><b>${esc(c.maint_cron)}</b></div>
+        <div class="hk-stat"><span class="hk-lbl">Audit kept</span><b>${
+          c.audit_retention_days ? c.audit_retention_days + ' days' : 'forever'}</b></div>
+      </div>
+      ${c.enabled ? '' : `<div class="fhint" style="margin-top:10px">
+        Retention is off. Set <code>BRACE_RETENTION_DAYS</code> in the Deployment to switch it on —
+        the orphan sweep and database compaction run nightly either way.</div>`}
+      ${last && last.started_at ? `<div class="fhint" style="margin-top:8px">
+        Last run ${esc(String(last.started_at).replace('T',' '))} —
+        ${last.runs ? last.runs.runs : 0} run(s) deleted,
+        ${fmtBytes((last.runs?last.runs.freed_bytes:0)+(last.orphans?last.orphans.freed_bytes:0))} reclaimed
+        in ${last.seconds}s.</div>` : ''}`;
+  } catch(e) { box.innerHTML = `<div class="fhint">${esc(e.message)}</div>`; }
+}
+
+async function runHousekeeping(dry) {
+  const el = document.getElementById('hk-status');
+  if (!dry) {
+    if (!await askConfirm('Run housekeeping',
+        'This permanently deletes runs past the retention window and their reports. '
+        + 'Preview first if you have not already.', { okText: 'Delete now', danger: true })) return;
+  }
+  el.innerHTML = dry ? 'Checking what would be removed…' : 'Running…';
+  try {
+    const r = await api('POST', `/admin/maintenance/run?dry_run=${dry ? 'true' : 'false'}`);
+    const runs = r.runs || {}, orph = r.orphans || {}, audit = r.audit || {}, db = r.db || {};
+    const freed = (runs.freed_bytes || 0) + (orph.freed_bytes || 0);
+    el.innerHTML = `<span style="color:${dry ? 'var(--c-muted)' : '#15803d'}">
+      ${dry ? '<b>Dry run</b> — nothing was deleted.' : '<b>Done.</b>'}
+      Runs ${dry ? 'that would be' : ''} deleted: <b>${runs.runs || 0}</b>
+      ${runs.enabled === false ? '(retention off)' : ''} ·
+      Orphan folders: <b>${orph.dirs || 0}</b> ·
+      Audit rows: <b>${audit.rows || 0}</b> ·
+      Space: <b>${fmtBytes(freed)}</b>
+      ${db.vacuumed ? ` · database compacted, ${fmtBytes(db.freed_bytes)} reclaimed` : ''}
+      ${db.skipped_vacuum ? ` · compaction skipped (${esc(String(db.skipped_vacuum))})` : ''}
+      </span>
+      ${(runs.errors||[]).concat(orph.errors||[]).length
+        ? `<div class="fhint" style="color:#b45309">Some folders could not be removed: ${
+            esc(((runs.errors||[]).concat(orph.errors||[])).slice(0,3).join('; '))}</div>` : ''}`;
+    if (!dry) loadHousekeeping();
+  } catch(e) { el.innerHTML = `<span style="color:#b91c1c">${esc(e.message)}</span>`; }
+}
+
+// ── Audit log ──────────────────────────────────────────
+let _audit = { offset: 0, limit: 50, total: 0, rows: [] };
+
+function clearAuditFilters() {
+  ['audit-user','audit-action','audit-from','audit-to'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  loadAudit(true);
+}
+
+async function loadAudit(reset) {
+  const tb = document.getElementById('audit-tbody');
+  if (!tb) return;
+  const qs = new URLSearchParams({
+    username:  document.getElementById('audit-user').value || '',
+    action:    document.getElementById('audit-action').value || '',
+    date_from: document.getElementById('audit-from').value || '',
+    date_to:   document.getElementById('audit-to').value || '',
+    offset:    reset ? 0 : _audit.rows.length,
+    limit:     _audit.limit,
+  });
+  try {
+    const r = await api('GET', `/admin/audit?${qs}`);
+    _audit.total = r.total;
+    _audit.rows  = reset ? r.entries : _audit.rows.concat(r.entries);
+    // Rebuild the dropdowns only on a reset, or typing a filter would reset itself
+    if (reset) {
+      fillAuditSelect('audit-user',   r.usernames, 'All users');
+      fillAuditSelect('audit-action', auditFamilies(r.actions), 'All actions');
+    }
+    renderAudit();
+  } catch(e) {
+    tb.innerHTML = `<tr><td colspan="5" style="padding:20px;color:var(--c-muted)">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// 'run.trigger' and 'run.cancel' collapse to a single 'run' option — the server
+// treats a bare family name as a prefix match.
+function auditFamilies(actions) {
+  const fam = new Set();
+  (actions || []).forEach(a => { fam.add(a.split('.')[0]); fam.add(a); });
+  return [...fam].sort();
+}
+
+function fillAuditSelect(id, values, allLabel) {
+  const el = document.getElementById(id);
+  const cur = el.value;
+  el.innerHTML = `<option value="">${allLabel}</option>`
+    + (values || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  if (cur) el.value = cur;
+}
+
+function renderAudit() {
+  const tb = document.getElementById('audit-tbody');
+  document.getElementById('audit-count').textContent =
+    _audit.total ? `${_audit.rows.length} of ${_audit.total}` : '';
+  if (!_audit.rows.length) {
+    tb.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:26px;color:var(--c-muted)">
+      No audit entries match these filters.</td></tr>`;
+    document.getElementById('audit-more').innerHTML = '';
+    return;
+  }
+  tb.innerHTML = _audit.rows.map(e => `<tr>
+      <td style="white-space:nowrap">${esc((e.ts||'').replace('T',' '))}</td>
+      <td>${esc(e.username||'—')}</td>
+      <td><code style="font-size:11px">${esc(e.action||'')}</code></td>
+      <td>${esc(e.target||'—')}</td>
+      <td style="font-size:11px;color:var(--c-muted);word-break:break-word">${esc(auditDetail(e.detail))}</td>
+    </tr>`).join('');
+  const left = _audit.total - _audit.rows.length;
+  document.getElementById('audit-more').innerHTML = left > 0
+    ? `<div class="rd-more"><span>Showing ${_audit.rows.length} of ${_audit.total}</span>
+         <button class="btn btn-sm btn-o" onclick="loadAudit(false)">Load ${Math.min(left, _audit.limit)} more</button></div>`
+    : '';
+}
+
+function auditDetail(raw) {
+  if (!raw) return '';
+  try {
+    const d = JSON.parse(raw);
+    return Object.entries(d)
+      .filter(([, v]) => v !== null && v !== undefined && v !== '' &&
+                         !(Array.isArray(v) && !v.length))
+      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`)
+      .join('  ');
+  } catch (e) { return String(raw); }
 }
 
 function aiStatus(html, kind) {

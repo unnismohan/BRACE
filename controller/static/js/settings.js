@@ -18,6 +18,7 @@ async function loadSettings() {
   loadMembers();
   loadDangerZone();
   loadNotifyConfig();
+  loadSyncConfig();
   // The schedule dialog picks a suite from _groups, which is only populated by
   // the Suites tab — load it here so Settings works as a first stop.
   if (!_groups.length) loadGroups().finally(loadSchedules);
@@ -71,8 +72,14 @@ const HELP_SECTIONS = [
     <tr><td>Manage members, Danger Zone, Team tab</td><td>—</td><td>—</td><td>✓</td><td>✓</td></tr>
     <tr><td>Create projects and user accounts</td><td>—</td><td>—</td><td>—</td><td>✓</td></tr>
   </tbody></table>
-  <div class="help-note"><p>Buttons you lack permission for are still visible in places.
-  Using one returns a “permission denied” message rather than doing anything.</p></div>`},
+  <h4>What a Viewer sees</h4>
+  <p>Controls you cannot use are hidden rather than shown and refused: a ${R.v} gets no Run,
+  Add, Edit or Delete buttons, and scripts open read-only. A banner at the top of the project
+  says so, and everything else — runs, reports, coverage, failure detail, history — is fully
+  readable. Use this role for managers, auditors and anyone who should never accidentally
+  start a run.</p>
+  <div class="help-note"><p>Hiding is a courtesy, not the control. Every one of these actions
+  is checked on the server as well, so a stale browser tab cannot get around it.</p></div>`},
 
 { id:'scripts', title:'Scripts & the Editor', body:`
   <p>The <b>Scripts</b> tab is a file explorer and code editor over your project's script folder.</p>
@@ -202,7 +209,10 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   share test data or a login session are not safe to run at the same time.</p></div>
   <h4>Watching progress</h4>
   <p>Open <b>🔍 Details</b> to watch live: the progress bar, per-case status and console output
-  refresh automatically while the run is active — no need to reopen the window.</p>
+  update as each case finishes — no need to reopen the window. The server pushes those updates
+  rather than the page asking for them, so a case flipping to failed appears at once, and a
+  1000-case run costs no more to watch than a 10-case one. Where a proxy blocks event streams
+  the window falls back to refreshing every few seconds instead.</p>
   <h4>Finding an old run</h4>
   <p>The Runs tab filters by name or run ID, by date range, by status, and by <b>who started
   it</b> (the By dropdown, which also lists <code>scheduler</code> for scheduled runs). The
@@ -231,10 +241,22 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   <p>The new run is named after the original with a retry count, e.g.
   <code>UPC Regression run (retry 3)</code>, and its details link back to the run it came from,
   so the chain stays traceable. Re-running a retry does not stack the suffix.</p>
+  <h4>Finding a case in a large run</h4>
+  <p>The case list in <b>🔍 Details</b> is filtered and paged, so a run with a thousand cases
+  opens as fast as one with ten.</p>
+  <ul>
+    <li>The chips at the top — <b>All</b>, <b>✗ failed</b>, <b>✓ passed</b> — filter the list.
+    Their counts are for the whole run, not the page on screen.</li>
+    <li>A run with failures <b>opens on the failures</b>. Click <b>All</b> to see everything.</li>
+    <li>The search box matches test case code, name and failure reason.</li>
+    <li>50 cases load at a time; <b>Load 50 more</b> pulls the next page.</li>
+  </ul>
   <h4>Why a case failed</h4>
-  <p>Every failed case shows the reason inline in <b>🔍 Details</b> — the keyword that failed,
-  the library it came from, Robot's own message, and the screenshot taken at that moment if the
-  test captured one. Click the screenshot for the full-size image.</p>
+  <p>Each failed row shows the failing keyword on the row itself. Click <b>▸</b> to expand it for
+  the full reason — the library the keyword came from, Robot's own message, and the screenshot
+  taken at that moment if the test captured one. Click the screenshot for the full-size image.</p>
+  <p>Expanded rows stay open while the run is still executing, so you can read a failure without
+  the auto-refresh closing it.</p>
   <p>That is usually enough to triage without opening anything else. <b>Report</b> is the Robot
   Framework summary; <b>Log</b> is the full step-by-step trace — open it when the inline summary
   isn't enough. <b>Combined Report</b> merges every case in the run into a single view.</p>`},
@@ -369,9 +391,40 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   <p>Set the repository URL, branch, username and access token, then <b>Save Git Config</b>.
   <b>Sync Now</b> pulls immediately. The token is stored encrypted and never shown again —
   leave the field blank when saving to keep the existing one.</p>
+  <h4>Test Cases from Git</h4>
+  <p>Two modes, per project:</p>
+  <ul>
+    <li><b>Manual</b> (default) — you create and edit test cases in BRACE. Nothing changes.</li>
+    <li><b>Git</b> — the repository decides which test cases exist. Every test in a
+      <code>Testcases</code> folder becomes a BRACE test case; its name, <code>[Tags]</code> and
+      <code>[Documentation]</code> come from the file.</li>
+  </ul>
+  <p><b>🔍 Preview</b> reports exactly what would change without writing anything — worth
+  running first on a project that already has hand-made cases. <b>↻ Sync Test Cases</b> applies
+  it, and in git mode a Git Sync from the Scripts tab reconciles the cases too, so pulling
+  scripts and updating the case list are one action.</p>
+  <p>Three guarantees make this safe to run repeatedly:</p>
+  <ul>
+    <li><b>Nothing is deleted.</b> A test removed from the repo is flagged
+      <span class="srcbadge missing">not in repo</span> and kept — its run history is real
+      history. Delete it yourself when you are ready.</li>
+    <li><b>Hand-made cases are never touched.</b> Only cases that came from a file are managed.</li>
+    <li><b>Each case runs only its own test.</b> A file with five tests produces five cases,
+      each pinned with <code>--test</code>, not five cases that each run all five.</li>
+  </ul>
+  <h4>Pinning a test case code</h4>
+  <p>Identity is normally the file path plus the test name, so renaming a test reads as one
+  removed and one added. To keep a code across renames, put it in the repository:</p>
+  <pre><code>*** Test Cases ***
+Verify Successful Login
+    [Tags]    smoke    braceid:VDRC_LOGIN_01</code></pre>
+  <p>That tag sets the BRACE test case code and is not shown as a tag. If the same code is
+  already used by another project the sync assigns a generated one instead and says so —
+  codes are unique across the whole server.</p>
   <h4>Schedules</h4>
   <p>Run a suite automatically on a timetable — see
-  <a href="#" onclick="helpGo('schedules');return false">Scheduled Runs</a>.</p>
+  <a href="#" onclick="helpGo('schedules');return false">Scheduled Runs</a>.
+  Git mode has its own optional cron for reconciling test cases.</p>
   <h4>Notifications</h4>
   <p>Email alerts for failed and scheduled runs, plus a weekly digest — see
   <a href="#" onclick="helpGo('notify');return false">Email Notifications</a>.</p>
@@ -416,6 +469,32 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   <p>One SMTP account for the whole server, with presets for Gmail, Microsoft 365, SendGrid,
   SES and others, and a <b>Send Test</b> button that reports the real error. Detail in
   <a href="#" onclick="helpGo('notify');return false">Email Notifications</a>.</p>
+  <h4>Housekeeping</h4>
+  <p>The database grows by runs × test cases, and every case leaves a log and a report on the
+  results volume. A nightly job keeps that bounded:</p>
+  <ul>
+    <li><b>Retention</b> — deletes runs that finished more than <code>BRACE_RETENTION_DAYS</code>
+      ago, with their reports. <b>0 means keep forever</b>, and that is the default, so an
+      upgrade never starts deleting history on its own.</li>
+    <li><b>Always keep</b> — <code>BRACE_RETENTION_KEEP_MIN</code> runs per project survive
+      however old they are, so a project that runs monthly keeps its history.</li>
+    <li><b>Orphan sweep</b> — result folders with no run behind them, and stale editor
+      quick-run output. Runs even with retention off.</li>
+    <li><b>Compaction</b> — reclaims freed database space, and only when something was actually
+      deleted. It is skipped automatically while any test is executing.</li>
+  </ul>
+  <p>The card shows current database and disk usage. <b>🔍 Preview (dry run)</b> reports what
+  would be removed without touching anything; <b>🧹 Run Now</b> does it. A run that is still
+  executing is never purged, whatever its age.</p>
+  <div class="help-note warn"><p>Retention is set in the Deployment, not in this screen —
+  a value editable in two places drifts. The card reports what the pod is configured with.</p></div>
+  <h4>Audit Log</h4>
+  <p>Who changed what: runs started and cancelled, test cases and suites created and deleted,
+  scripts saved, schedules and settings changed, members added and roles altered. Filter by
+  user, action, or date; an action family such as <code>run</code> matches
+  <code>run.trigger</code> and <code>run.cancel</code> together.</p>
+  <p>Reads are not recorded — logging page views would bury the interesting lines. Passwords,
+  tokens and API keys are recorded as <i>changed</i>, never as their value.</p>
   <h4>Monitoring the server</h4>
   <p>For whoever operates the deployment rather than uses it:</p>
   <ul>

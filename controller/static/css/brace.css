@@ -1,6 +1,6 @@
 
 /* ═══════════════════════════════════════════
-   BRACE palette
+   6D Brand System
    Primary  #0F3278   Accent  #ee743b
    Blue     #0099ff   Mid     #0578be
    Yellow   #f7d21e
@@ -540,13 +540,70 @@ input[type=checkbox]{width:auto;cursor:pointer}
 .tc-rrow:last-child{border-bottom:none}
 .tc-rrow .name{flex:1;color:var(--c-text)}
 
+/* ── Role-aware controls ── */
+/* Controls carry data-cap="run|edit|manage"; the body carries a no-<cap> class
+   for each capability the current project role lacks. Hiding is subtractive on
+   purpose: if the role has not been resolved yet, buttons stay visible and the
+   server's 403 is the backstop — a missing class must never blank the UI. */
+body.no-run    [data-cap="run"],
+body.no-edit   [data-cap="edit"],
+body.no-manage [data-cap="manage"] { display: none !important; }
+/* Says why the buttons are gone, so a viewer is not left wondering. */
+.role-note{display:flex;align-items:center;gap:8px;padding:7px 12px;margin-bottom:12px;
+           border-radius:8px;background:#eef2ff;border:1px solid #c7d2fe;
+           color:#3730a3;font-size:12px}
+
+/* ── Housekeeping card ── */
+.hk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.hk-stat{background:var(--c-bg,#f7f9ff);border:1px solid var(--c-border);border-radius:8px;
+         padding:9px 12px;font-size:13px}
+.hk-stat b{display:block;margin-top:2px;font-size:14px;font-variant-numeric:tabular-nums}
+.hk-lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--c-muted);font-weight:600}
+
+/* ── Git-synced test case badge ── */
+.srcbadge{display:inline-block;padding:1px 7px;border-radius:9px;font-size:10px;
+          font-weight:600;white-space:nowrap;margin-left:6px}
+.srcbadge.git{background:#dcfce7;color:#166534}
+.srcbadge.missing{background:#fee2e2;color:#991b1b}
+
+/* ── Run detail: filter bar, paging, expandable rows ── */
+/* A run can hold 1000+ cases. The list is paged and filtered rather than dumped
+   in full, so these controls are what makes it navigable. */
+.rd-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+        padding:8px 0 10px;border-top:1px solid var(--c-border);margin-top:4px}
+.rd-chips{display:flex;gap:6px;flex-wrap:wrap}
+.rd-chip{border:1px solid var(--c-border);background:var(--c-card);color:var(--c-text);
+         border-radius:14px;padding:3px 11px;font-size:11px;font-weight:600;cursor:pointer;
+         line-height:1.7;transition:background .12s,border-color .12s}
+.rd-chip b{font-variant-numeric:tabular-nums;margin-left:2px}
+.rd-chip:hover{border-color:var(--c-brand)}
+.rd-chip.on{background:var(--c-brand);border-color:var(--c-brand);color:#fff}
+.rd-chip.failed.on{background:var(--c-err);border-color:var(--c-err)}
+.rd-chip.passed.on{background:var(--c-ok);border-color:var(--c-ok)}
+.rd-q{flex:1;min-width:170px;padding:5px 10px;font-size:12px;
+      border:1px solid var(--c-border);border-radius:6px;background:var(--c-card);color:var(--c-text)}
+.rd-x{border:none;background:none;cursor:pointer;color:var(--c-muted);
+      font-size:11px;width:16px;padding:0;line-height:1}
+.rd-x:hover{color:var(--c-err)}
+.rd-x-sp{width:16px;display:inline-block}
+/* The one-line reason, shown on the collapsed row so a page of failures can be
+   scanned without expanding any of them. */
+.rd-fs{color:var(--c-err);font-size:11px}
+.rd-dur{color:var(--c-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.rd-more{display:flex;align-items:center;justify-content:space-between;gap:12px;
+         padding:10px 0 2px;font-size:11px;color:var(--c-muted)}
+
 /* ── Inline failure summary (run detail) ── */
 /* Sits directly under the failed row so the reason is read, not hunted for. */
 .failbox{border-left:3px solid var(--c-err);background:#fef2f2;border-radius:0 6px 6px 0;
          padding:8px 12px;margin:0 0 8px 0;font-size:12px}
 .failbox .fb-kw{font-weight:700;color:#991b1b;margin-bottom:3px}
+/* A failed API case can carry a whole XML response. Unbounded, 39 of those in
+   one run detail make the modal thousands of pixels tall and unscrollable in
+   practice — so each block scrolls inside itself. */
 .failbox .fb-msg{color:#7f1d1d;white-space:pre-wrap;word-break:break-word;
-                 font-family:var(--font-mono,ui-monospace,Consolas,monospace);font-size:11px;line-height:1.5}
+                 font-family:var(--font-mono,ui-monospace,Consolas,monospace);font-size:11px;line-height:1.5;
+                 max-height:8.5em;overflow-y:auto}
 .failbox .fb-shot{display:block;margin-top:8px;max-width:340px;width:100%;height:auto;
                   border:1px solid #fecaca;border-radius:5px;cursor:zoom-in}
 

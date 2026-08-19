@@ -177,7 +177,7 @@ function renderTCs() {
       <td><input type="checkbox" class="tc-chk" data-id="${tc.id}" ${_tcPicked.has(tc.id)?'checked':''} onchange="tcToggle(${tc.id},this.checked)"></td>
       <td><span class="tc-code">${esc(tc.tc_code||'—')}</span></td>
       <td class="tc-name-cell" title="${esc(suiteTitle)}">
-        ${esc(tc.name)}${tc.suite_path?'<span class="tc-suite-dot" title="'+esc(suiteTitle)+'">🔗</span>':''}
+        ${esc(tc.name)}${tc.suite_path?'<span class="tc-suite-dot" title="'+esc(suiteTitle)+'">🔗</span>':''}${tcSourceBadge(tc)}
       </td>
       <td class="tc-desc-cell" title="${esc(tc.description||'')}">${esc(tc.description||'—')}</td>
       <td>${tcTagList(tc).map(t =>
@@ -185,13 +185,23 @@ function renderTCs() {
           ).join('') || '<span style="color:var(--c-muted)">—</span>'}</td>
       <td>${tc.last_run_status?`<span class="sbadge ${tc.last_run_status}">${tc.last_run_status}</span>`:'<span style="color:var(--c-muted)">—</span>'}</td>
       <td><div class="bgrp">
-        <button class="bico" onclick="quickRunTC(${tc.id})" title="Run">▶</button>
+        <button data-cap="run"  class="bico" onclick="quickRunTC(${tc.id})" title="Run">▶</button>
         <button class="bico" onclick="openTCHistory(${tc.id})" title="Execution history">🕒</button>
-        <button class="bico" onclick="editTC(${tc.id})"    title="Edit">✏️</button>
-        <button class="bico" onclick="deleteTC(${tc.id})"  title="Delete">🗑</button>
+        <button data-cap="edit" class="bico" onclick="editTC(${tc.id})"    title="Edit">✏️</button>
+        <button data-cap="manage" class="bico" onclick="deleteTC(${tc.id})"  title="Delete">🗑</button>
       </div></td>`;
     tbody.appendChild(tr);
   });
+}
+
+// Where this test case came from. Only shown when it is not hand-created, so
+// projects that never turn on git sync see no new noise in the table.
+function tcSourceBadge(tc) {
+  if (tc.sync_status === 'missing')
+    return `<span class="srcbadge missing" title="This test is no longer in the repository — its history is kept until someone deletes it">not in repo</span>`;
+  if (tc.source_path)
+    return `<span class="srcbadge git" title="From ${esc(tc.source_path)} — edit it in the repository, not here">git</span>`;
+  return '';
 }
 
 // Selection is held outside the DOM so filtering the table cannot silently

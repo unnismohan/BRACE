@@ -8,7 +8,7 @@ services:
       args:
         # Keeps /health honest locally too — without it the build falls back to
         # the Dockerfile's ARG default.
-        APP_VERSION: "2.1.3-local"
+        APP_VERSION: "2.2.0-local"
     image: brace-local:dev
     container_name: brace-local
     ports:
@@ -48,6 +48,16 @@ services:
       # k8s runs "json"; keep that here so the JSON log path is exercised
       # locally too. Switch to "text" when tailing logs by eye.
       BRACE_LOG_FORMAT: "json"
+      # Housekeeping. Off by default here — a laptop database is where you keep
+      # the run you are still investigating. Set a number to exercise the purge,
+      # and use Administration → Housekeeping → Preview before Run Now.
+      BRACE_RETENTION_DAYS: "0"
+      BRACE_RETENTION_KEEP_MIN: "20"
+      BRACE_AUDIT_RETENTION_DAYS: "365"
+      # Nightly job. Runs the orphan sweep and ANALYZE even with retention off.
+      BRACE_MAINT_CRON: "30 2 * * *"
+      # Live run updates over SSE; past this many watchers a browser polls.
+      BRACE_SSE_MAX_SUBS: "20"
       # RMQ not needed locally unless testing agent1
       RMQ_HOST:     localhost
       RMQ_PORT:     "5672"

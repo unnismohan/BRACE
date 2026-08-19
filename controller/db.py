@@ -238,6 +238,22 @@ CREATE TABLE IF NOT EXISTS notify_state (
     last_status  TEXT,
     last_sent_at TEXT
 );
+
+-- Who changed what. Deliberately denormalised (username as text, not a user_id)
+-- so the trail survives the user being deleted — an audit log that loses its
+-- subject when someone leaves is not an audit log.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT,        -- local time, written by the app (see below)
+    username   TEXT,
+    action     TEXT,        -- 'run.trigger', 'tc.delete', 'user.role_change', …
+    project_id INTEGER,
+    target     TEXT,        -- run_id / tc_code / schedule id / affected username
+    detail     TEXT         -- small JSON blob; NEVER secrets
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts     ON audit_log(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_user   ON audit_log(username);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 """
 
 
@@ -295,6 +311,21 @@ def init_db():
                      ("only_on_change", "INTEGER DEFAULT 1"),
                      ("notify_triggerer", "INTEGER DEFAULT 0")]:
         _add_column(c, "notify_config", col, typ)
+    # Git-native test cases. A project stays in 'manual' mode until someone opts
+    # in, so an upgrade never starts rewriting test case metadata on its own.
+    for col, typ in [("sync_mode",        "TEXT DEFAULT 'manual'"),
+                     ("sync_cron",        "TEXT"),
+                     ("last_sync_at",     "TEXT"),
+                     ("last_sync_result", "TEXT")]:
+        _add_column(c, "projects", col, typ)
+    # Where a synced test case came from. NULL source_path = created by hand in
+    # the UI, which the sync must never touch.
+    for col, typ in [("source_path",  "TEXT"),
+                     ("source_test",  "TEXT"),
+                     ("sync_status",  "TEXT")]:
+        _add_column(c, "test_cases", col, typ)
+    # Retention purges by finished_at, and the run list sorts by started_at.
+    c.execute("CREATE INDEX IF NOT EXISTS idx_runs_finished ON test_runs(finished_at)")
     # Per-test-case history filters on tc_code across every run; this table grows
     # by (runs x cases) so the scan gets expensive without an index.
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_tc_code ON test_run_items(tc_code)")

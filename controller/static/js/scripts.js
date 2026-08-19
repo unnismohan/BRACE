@@ -375,13 +375,17 @@ async function openFile(path) {
     const fn = document.getElementById('editor-filename');
     fn.className = 'editor-open-tab';
     fn.innerHTML = `<span title="${esc(path)}">${esc(path.split("/").pop())}</span>`;
-    document.getElementById('btn-savefile').style.display = 'inline-flex';
-    document.getElementById('et-sep1').style.display      = 'inline-block';
+    // Editor toolbar is built by JS, so the data-cap CSS cannot reach it —
+    // a viewer gets the file read-only, with no Save/Delete/New.
+    const mayEdit = can('edit'), mayRun = can('run');
+    document.getElementById('btn-savefile').style.display = mayEdit ? 'inline-flex' : 'none';
+    document.getElementById('et-sep1').style.display      = mayEdit ? 'inline-block' : 'none';
     const isRobot = path.endsWith('.robot') || path.endsWith('.resource');
-    document.getElementById('btn-runfile').style.display  = isRobot ? 'inline-flex' : 'none';
-    document.getElementById('et-sep2').style.display      = isRobot ? 'inline-block' : 'none';
-    document.getElementById('btn-newfile').style.display  = 'inline-flex';
-    document.getElementById('btn-delfile').style.display  = 'inline-flex';
+    document.getElementById('btn-runfile').style.display  = (isRobot && mayRun) ? 'inline-flex' : 'none';
+    document.getElementById('et-sep2').style.display      = (isRobot && mayRun) ? 'inline-block' : 'none';
+    document.getElementById('btn-newfile').style.display  = mayEdit ? 'inline-flex' : 'none';
+    document.getElementById('btn-delfile').style.display  = mayEdit ? 'inline-flex' : 'none';
+    document.getElementById('editor-area').readOnly = !mayEdit;
     updateEditor(content);
     updateCursorPos();
     document.querySelectorAll('.tree-row[data-path]').forEach(el => el.classList.toggle('active', el.dataset.path===path));

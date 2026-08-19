@@ -184,28 +184,334 @@ function renderRuns() {
   });
 }
 
+// ── Run detail ───────────────────────────────────────────────────────────────
+// Built to survive a 1200-case run. The rules that follow from that:
+//   • the 3s poller fetches the summary only (~1 KB), never the case list
+//   • cases are paged in from /runs/{id}/items, PAGE at a time
+//   • failure detail (stack traces, page source) is fetched per row on expand
+//   • the list is filtered to failures by default — on a big run that is the
+//     only part anyone is looking for
+const RD_PAGE = 50;
 let _rdTimer = null;
 let _rdStreaming = false;
+let _rd = null;          // per-open state; null when the modal is closed
+let _rdQTimer = null;
+let _rdES = null;        // EventSource while a run is live
 
 async function viewRunDetail(runId) {
-  clearInterval(_rdTimer);
+  rdStopWatch();
   _rdStreaming = false;
   try {
-    await renderRunDetail(runId);
+    const r = await api('GET', `/runs/${runId}`);
+    _rd = { runId, run: r, q: '', loaded: 0, total: 0, items: [],
+            open: {}, detail: {}, headSig: '', busy: false, live: false,
+            // Land on the failures when there are any; there is no reason to
+            // make someone scroll past 700 passes to find the 400 that broke.
+            status: (r.status_counts && r.status_counts.failed) ? 'failed' : '' };
+    document.getElementById('rd-body').innerHTML = `
+      <div id="rd-head"></div>
+      <div class="rd-bar">
+        <div id="rd-chips" class="rd-chips"></div>
+        <input id="rd-q" class="rd-q" type="search" placeholder="Search code, name or failure…"
+               oninput="rdSearchInput(this.value)" autocomplete="off">
+      </div>
+      <div id="rd-items"></div>
+      <div id="rd-more"></div>`;
+    renderRunHead(r);
+    await loadRunItems(true);
     showModal('modal-rundetail');
-    _rdTimer = setInterval(() => renderRunDetail(runId), 3000);
+    updateRunConsole(r);
+    rdStartWatch(r);
   } catch(e) { toast(e.message,'e'); }
+}
+
+// Live updates. SSE when it connects, the 3s poll when it does not — a proxy
+// that buffers event streams degrades to the old behaviour instead of leaving
+// the window frozen.
+function rdStartWatch(r) {
+  if (r.status !== 'running' && r.status !== 'queued') return;
+  if (!window.EventSource) { _rdTimer = setInterval(pollRunDetail, 3000); return; }
+  const runId = _rd.runId;
+  try {
+    // EventSource cannot send headers, so the token rides in the query string.
+    _rdES = new EventSource(
+      `/api/runs/${encodeURIComponent(runId)}/events?token=${encodeURIComponent(_token||'')}`);
+  } catch(e) {
+    _rdTimer = setInterval(pollRunDetail, 3000);
+    return;
+  }
+  _rdES.addEventListener('summary', ev => rdApplySummary(JSON.parse(ev.data)));
+  _rdES.addEventListener('item',    ev => rdApplyItem(JSON.parse(ev.data)));
+  _rdES.addEventListener('done',    ev => {
+    rdApplySummary(JSON.parse(ev.data));
+    rdStopWatch();
+    // One last read so the header, chips and combined-report buttons reflect
+    // the committed run rather than the last event.
+    pollRunDetail();
+  });
+  _rdES.onopen  = () => { if (_rd) { _rd.live = true; clearInterval(_rdTimer); } };
+  _rdES.onerror = () => {
+    // Fires on network loss AND on a clean server close. Either way, stop the
+    // stream and fall back to polling; if the run is finished the first poll
+    // clears its own timer.
+    if (_rdES) { _rdES.close(); _rdES = null; }
+    if (_rd && !_rdTimer) _rdTimer = setInterval(pollRunDetail, 3000);
+    if (_rd) _rd.live = false;
+  };
+  // Safety net: if the stream never opens, poll anyway after 4s.
+  _rdTimer = setInterval(pollRunDetail, 4000);
+}
+
+function rdStopWatch() {
+  clearInterval(_rdTimer);
+  _rdTimer = null;
+  if (_rdES) { _rdES.close(); _rdES = null; }
+  if (_rd) _rd.live = false;
+}
+
+// A pushed summary carries only what changed; merge rather than replace so the
+// fields the event does not send (run_name, has_combined_report…) survive.
+function rdApplySummary(d) {
+  if (!_rd) return;
+  Object.assign(_rd.run, d);
+  renderRunHead(_rd.run);
+  updateRunConsole(_rd.run);
+}
+
+function rdApplyItem(d) {
+  if (!_rd) return;
+  const counts = _rd.run.status_counts || (_rd.run.status_counts = {});
+  const row = _rd.items.find(i => i.id === d.id);
+  if (typeof d.passed === 'number') { _rd.run.passed = d.passed; _rd.run.failed = d.failed; }
+  if (row) {
+    // Keep the chip counts honest as a case moves pending -> running -> verdict.
+    if (row.status !== d.status) {
+      counts[row.status] = Math.max(0, (counts[row.status] || 1) - 1);
+      counts[d.status]   = (counts[d.status] || 0) + 1;
+    }
+    Object.assign(row, {status: d.status, rf_run_id: d.rf_run_id,
+                        fail_summary: d.fail_summary || row.fail_summary});
+    document.getElementById('rd-items').dataset.sig = '';   // contents changed, count did not
+    renderRunItems();
+  } else if (d.status !== 'running') {
+    // A case that finished outside the loaded page: counts still need updating,
+    // and the filtered list may now be missing a row the user should see.
+    counts.pending = Math.max(0, (counts.pending || 1) - 1);
+    counts[d.status] = (counts[d.status] || 0) + 1;
+    if (!_rd.busy && _rd.status && _rd.status === d.status) refreshRunItems();
+  }
+  renderRunHead(_rd.run);
+}
+
+function closeRunDetail() {
+  rdStopWatch();
+  clearTimeout(_rdQTimer);
+  _rdStreaming = false;
+  _rd = null;
+  closeModal('modal-rundetail');
+}
+
+// Summary poll. Cheap by design — no items in the response, and the case list
+// is only re-fetched when a count actually moved.
+async function pollRunDetail() {
+  if (!_rd) return;
+  let r;
+  try { r = await api('GET', `/runs/${_rd.runId}`); }
+  catch(e) { return; }                       // transient; the next tick retries
+  if (!_rd) return;
+  const prev = _rd.run;
+  _rd.run = r;
+  renderRunHead(r);
+  updateRunConsole(r);
+  const moved = prev.passed !== r.passed || prev.failed !== r.failed
+             || prev.status !== r.status;
+  if (moved) refreshRunItems();
+  if (r.status !== 'running' && r.status !== 'queued') rdStopWatch();
+}
+
+function renderRunHead(r) {
+  document.getElementById('rd-title').textContent = r.run_name || _rd.runId;
+  const runId  = _rd.runId;
+  const failed = (r.status_counts && r.status_counts.failed) || 0;
+  const pct    = r.total ? Math.round(r.passed / r.total * 100) : 0;
+  const barPct = r.total ? (r.passed + r.failed) / r.total * 100 : 0;
+  const html = `
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <span class="sbadge ${r.status}">${r.status}</span>
+      <span style="font-size:12px">By: <b>${esc(r.triggered_by||'—')}</b></span>
+      <span style="font-size:12px">✓ ${r.passed} &nbsp; ✗ ${r.failed} &nbsp; / ${r.total}</span>
+      ${r.rerun_of?`<span style="font-size:12px;color:var(--c-muted)">re-run of <a href="#" onclick="viewRunDetail(${jsArg(r.rerun_of)});return false">${esc(r.rerun_of)}</a></span>`:''}
+    </div>
+    <div class="pbar" style="margin-bottom:12px"><div class="fill" style="width:${barPct}%;background:linear-gradient(90deg,var(--c-ok) ${pct}%,var(--c-err) 0)"></div></div>
+    ${(r.has_combined_report || failed)?`<div class="bgrp" style="margin-bottom:12px">
+      ${r.has_combined_report?`<button class="btn btn-sm btn-p" onclick="openReport('/results/${_curProj.id}/${runId}/combined/report.html','Combined Report')">📊 Combined Report</button>
+      <button class="btn btn-sm btn-o" onclick="openReport('/results/${_curProj.id}/${runId}/combined/log.html','Combined Log')">📋 Combined Log</button>`:''}
+      ${(failed && r.status!=='running' && r.status!=='queued')
+        ?`<button class="btn btn-sm btn-a" onclick="rerunFailed(${jsArg(runId)})">↻ Re-run Failed (${failed})</button>`:''}
+    </div>`:''}`;
+  // Only touch the DOM when something changed — otherwise a 3s repaint kills
+  // text selection and any :hover in the header.
+  const head = document.getElementById('rd-head');
+  if (head && head.dataset.sig !== html.length + ':' + barPct + ':' + r.status) {
+    head.innerHTML = html;
+    head.dataset.sig = html.length + ':' + barPct + ':' + r.status;
+  }
+  renderRunChips(r);
+}
+
+// Status filter. The counts come from a GROUP BY, so they describe the whole
+// run — not just the page currently loaded.
+function renderRunChips(r) {
+  const el = document.getElementById('rd-chips');
+  if (!el) return;
+  const c = r.status_counts || {};
+  const order = ['failed','passed','error','skipped','running','queued','cancelled'];
+  const seen  = order.filter(s => c[s]).concat(
+                  Object.keys(c).filter(s => order.indexOf(s) < 0));
+  const icon  = { passed:'✓', failed:'✗' };
+  const chips = [{ k:'', label:'All', n:r.item_count||0 }].concat(
+    seen.map(s => ({ k:s, label:`${icon[s]||''} ${s}`.trim(), n:c[s] })));
+  const html = chips.map(ch =>
+    `<button class="rd-chip ${ch.k===_rd.status?'on':''} ${ch.k}"
+             onclick="rdSetStatus(${jsArg(ch.k)})">${esc(ch.label)} <b>${ch.n}</b></button>`
+  ).join('');
+  if (el.dataset.sig !== html.length + ':' + _rd.status) {
+    el.innerHTML = html;
+    el.dataset.sig = html.length + ':' + _rd.status;
+  }
+}
+
+function rdSetStatus(s) {
+  if (!_rd || _rd.status === s) return;
+  _rd.status = s;
+  renderRunChips(_rd.run);
+  loadRunItems(true);
+}
+
+function rdSearchInput(v) {
+  if (!_rd) return;
+  clearTimeout(_rdQTimer);
+  // Debounced — typing "VDRC_API" should be one query, not eight.
+  _rdQTimer = setTimeout(() => { if (_rd) { _rd.q = v; loadRunItems(true); } }, 300);
+}
+
+// reset=true starts a fresh page 1; otherwise append the next page.
+async function loadRunItems(reset) {
+  if (!_rd || _rd.busy) return;
+  _rd.busy = true;
+  const runId = _rd.runId;
+  const offset = reset ? 0 : _rd.loaded;
+  const qs = `?status=${encodeURIComponent(_rd.status)}&q=${encodeURIComponent(_rd.q)}`
+           + `&offset=${offset}&limit=${RD_PAGE}`;
+  try {
+    const p = await api('GET', `/runs/${runId}/items${qs}`);
+    if (!_rd || _rd.runId !== runId) return;   // modal closed or switched runs
+    _rd.total  = p.total;
+    _rd.items  = reset ? p.items : _rd.items.concat(p.items);
+    _rd.loaded = _rd.items.length;
+    if (reset) { _rd.open = {}; }
+    renderRunItems();
+  } catch(e) {
+    toast(e.message,'e');
+  } finally { if (_rd) _rd.busy = false; }
+}
+
+// Re-fetch exactly the rows already on screen, so a running run updates without
+// collapsing what the reader has expanded or losing their place.
+async function refreshRunItems() {
+  if (!_rd || _rd.busy || !_rd.loaded) return;
+  _rd.busy = true;
+  const runId = _rd.runId, want = Math.min(_rd.loaded, 500);
+  const qs = `?status=${encodeURIComponent(_rd.status)}&q=${encodeURIComponent(_rd.q)}`
+           + `&offset=0&limit=${want}`;
+  try {
+    const p = await api('GET', `/runs/${runId}/items${qs}`);
+    if (!_rd || _rd.runId !== runId) return;
+    _rd.total  = p.total;
+    _rd.items  = p.items;
+    _rd.loaded = p.items.length;
+    renderRunItems();
+  } catch(e) { /* transient — the next count change retries */ }
+  finally { if (_rd) _rd.busy = false; }
+}
+
+function rdItemRow(it) {
+  const runId  = _rd.runId;
+  const expand = it.status === 'failed';
+  const open   = !!_rd.open[it.id];
+  return `<div class="tc-rrow">
+      ${expand?`<button class="rd-x" onclick="rdToggle(${it.id})"
+                 title="${open?'Hide':'Show'} failure detail">${open?'▾':'▸'}</button>`
+              :`<span class="rd-x-sp"></span>`}
+      <span class="tc-code">${esc(it.tc_code||'')}</span>
+      <span class="name">${esc(it.tc_name||'')}${
+        (!open && it.fail_summary)?`<span class="rd-fs"> — ${esc(it.fail_summary)}</span>`:''}</span>
+      <span class="sbadge ${it.status}">${it.status}</span>
+      <div class="bgrp">
+        ${it.has_report?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/report.html`)},${jsArg((it.tc_name||'')+' Report')})">Report</button>`:''}
+        ${it.has_log   ?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/log.html`)},${jsArg((it.tc_name||'')+' Log')})">Log</button>`:''}
+        ${it.status==='failed'?`<button class="btn btn-sm btn-a" onclick="openAIDebug(${jsArg(runId)},${jsArg(it.rf_run_id||'')},null,${jsArg(it.tc_name||'')})" title="AI-assisted debugging">🤖 Debug</button>`:''}
+      </div>
+    </div>${open?failureBlock(_rd.detail[it.id]):''}`;
+}
+
+function renderRunItems() {
+  const box = document.getElementById('rd-items');
+  if (!box) return;
+  const html = _rd.items.length
+    ? _rd.items.map(rdItemRow).join('')
+    : `<div style="padding:26px;text-align:center;color:var(--c-muted);font-size:12px">
+         No test cases match this filter.</div>`;
+  if (box.dataset.sig !== html.length + ':' + _rd.items.length) {
+    const scroller = document.querySelector('#modal-rundetail .modal');
+    const top = scroller ? scroller.scrollTop : 0;
+    box.innerHTML = html;
+    box.dataset.sig = html.length + ':' + _rd.items.length;
+    if (scroller && top) scroller.scrollTop = top;
+  }
+  const more = document.getElementById('rd-more');
+  const left = _rd.total - _rd.loaded;
+  more.innerHTML = _rd.total
+    ? `<div class="rd-more">
+         <span>Showing ${_rd.loaded} of ${_rd.total}</span>
+         ${left>0?`<button class="btn btn-sm btn-o" onclick="loadRunItems(false)">
+            Load ${Math.min(left, RD_PAGE)} more</button>`:''}
+       </div>`
+    : '';
+}
+
+// Expanding is what pulls fail_detail and the screenshot over the wire — one
+// row's worth, not the whole run's.
+async function rdToggle(id) {
+  if (!_rd) return;
+  if (_rd.open[id]) { delete _rd.open[id]; renderRunItems(); return; }
+  _rd.open[id] = true;
+  renderRunItems();
+  if (!_rd.detail[id]) {
+    try {
+      const d = await api('GET', `/runs/${_rd.runId}/items/${id}`);
+      if (!_rd) return;
+      _rd.detail[id] = d;
+      // Force the signature to differ — the row count did not change, only its
+      // contents did.
+      const box = document.getElementById('rd-items');
+      if (box) box.dataset.sig = '';
+      renderRunItems();
+    } catch(e) { toast(e.message,'e'); }
+  }
 }
 
 // Why a case failed, straight from output.xml — the point is that nobody has to
 // open log.html and hunt for the red keyword to find out.
-function failureBlock(it, runId) {
-  if (it.status !== 'failed' || !(it.fail_summary || it.fail_detail)) return '';
+function failureBlock(it) {
+  if (!it) return `<div class="failbox"><div class="fb-msg">Loading failure detail…</div></div>`;
+  if (!(it.fail_summary || it.fail_detail))
+    return `<div class="failbox"><div class="fb-msg">No failure detail was captured for this case — open the Log for the full trace.</div></div>`;
   // <img> cannot send the Authorization header, so the results route's
   // query-param token is the only way this loads — same trick as the report
   // iframe. Without it every thumbnail 401s.
   const shot = it.fail_screenshot
-    ? `/results/${_curProj.id}/${runId}/${it.rf_run_id}/`
+    ? `/results/${_curProj.id}/${_rd.runId}/${it.rf_run_id}/`
       + `${encodeURIComponent(it.fail_screenshot)}?token=${encodeURIComponent(_token||'')}`
     : null;
   return `<div class="failbox">
@@ -216,61 +522,19 @@ function failureBlock(it, runId) {
   </div>`;
 }
 
-async function renderRunDetail(runId) {
-  const r = await api('GET', `/runs/${runId}`);
-  document.getElementById('rd-title').textContent = r.run_name||runId;
-  const pct = r.total ? Math.round(r.passed/r.total*100) : 0;
-  const barPct = r.total ? (r.passed+r.failed)/r.total*100 : 0;
-  let html=`
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-      <span class="sbadge ${r.status}">${r.status}</span>
-      <span style="font-size:12px">By: <b>${esc(r.triggered_by||'—')}</b></span>
-      <span style="font-size:12px">✓ ${r.passed} &nbsp; ✗ ${r.failed} &nbsp; / ${r.total}</span>
-      ${r.rerun_of?`<span style="font-size:12px;color:var(--c-muted)">re-run of <a href="#" onclick="viewRunDetail(${jsArg(r.rerun_of)});return false">${esc(r.rerun_of)}</a></span>`:''}
-    </div>
-    <div class="pbar" style="margin-bottom:12px"><div class="fill" style="width:${barPct}%;background:linear-gradient(90deg,var(--c-ok) ${pct}%,var(--c-err) 0)"></div></div>`;
-  const failedCount = (r.items||[]).filter(i => i.status==='failed').length;
-  if (r.has_combined_report || failedCount) {
-    html+=`<div class="bgrp" style="margin-bottom:12px">
-      ${r.has_combined_report?`<button class="btn btn-sm btn-p" onclick="openReport('/results/${_curProj.id}/${runId}/combined/report.html','Combined Report')">📊 Combined Report</button>
-      <button class="btn btn-sm btn-o" onclick="openReport('/results/${_curProj.id}/${runId}/combined/log.html','Combined Log')">📋 Combined Log</button>`:''}
-      ${(failedCount && r.status!=='running' && r.status!=='queued')
-        ?`<button class="btn btn-sm btn-a" onclick="rerunFailed(${jsArg(runId)})">↻ Re-run Failed (${failedCount})</button>`:''}
-    </div>`;
-  }
-  html+=`<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--c-muted);margin-bottom:8px">Test Case Results</div>`;
-  r.items.forEach(it => {
-    html+=`<div class="tc-rrow">
-      <span class="tc-code">${esc(it.tc_code||'')}</span>
-      <span class="name">${esc(it.tc_name||'')}</span>
-      <span class="sbadge ${it.status}">${it.status}</span>
-      <div class="bgrp">
-        ${it.has_report?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/report.html`)},${jsArg((it.tc_name||'')+' Report')})">Report</button>`:''}
-        ${it.has_log   ?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/log.html`)},${jsArg((it.tc_name||'')+' Log')})">Log</button>`:''}
-        ${it.status==='failed'?`<button class="btn btn-sm btn-a" onclick="openAIDebug(${jsArg(runId)},${jsArg(it.rf_run_id||'')},null,${jsArg(it.tc_name||'')})" title="AI-assisted debugging">🤖 Debug</button>`:''}
-      </div>
-    </div>${failureBlock(it, runId)}`;
-  });
-  document.getElementById('rd-body').innerHTML=html;
-
-  const cons=document.getElementById('run-console');
-  if (r.status==='queued') {
+function updateRunConsole(r) {
+  const cons = document.getElementById('run-console');
+  if (!cons) return;
+  if (r.status === 'queued') {
     // Keep polling — it will flip to running when an execution slot frees up
     cons.textContent = 'Waiting for a free execution slot…\n\n'
       + 'BRACE limits how many suites run at once so the server is not overloaded. '
       + 'This run starts automatically as soon as a slot is available.';
-  } else if (r.status==='running') {
-    if (!_rdStreaming) { cons.textContent=''; _rdStreaming = true; streamLog(runId, cons); }
-  } else {
-    clearInterval(_rdTimer);
-    if (!cons.textContent) cons.textContent='(Run complete — open Report/Log links above)';
+  } else if (r.status === 'running') {
+    if (!_rdStreaming) { cons.textContent=''; _rdStreaming = true; streamLog(_rd.runId, cons); }
+  } else if (!cons.textContent) {
+    cons.textContent = '(Run complete — open Report/Log links above)';
   }
-}
-
-function closeRunDetail() {
-  clearInterval(_rdTimer);
-  _rdStreaming = false;
-  closeModal('modal-rundetail');
 }
 
 function streamLog(runId, el) {

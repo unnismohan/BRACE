@@ -261,8 +261,43 @@ async function openProject(pid) {
   // Team activity is project_admin-only — hide the tab for everyone else
   document.getElementById('tabt-team').style.display =
     _curProj.my_role === 'project_admin' ? '' : 'none';
+  applyRoleUI();
   renderProjNav(); showView('project'); switchTab('scripts');
   api('GET', `/projects/${pid}/base-path`).then(r => { _basePath = r.base_path; }).catch(() => { _basePath = ''; });
+}
+
+// ── Role-aware UI ──────────────────────────────────────
+// Mirrors ROLE_CAPS on the server. This only hides controls; every one of them
+// is enforced server-side as well, so a stale or missing role here costs a
+// confusing 403, never unauthorised access.
+const ROLE_CAPS = {
+  viewer:        ['view'],
+  tester:        ['view', 'run', 'edit'],
+  project_admin: ['view', 'run', 'edit', 'manage'],
+};
+
+function myCaps() {
+  const role = (_curProj && _curProj.my_role) || '';
+  // A system admin is project_admin everywhere, which is what the API returns —
+  // but guard anyway so an unknown role degrades to read-only rather than
+  // silently granting everything.
+  return ROLE_CAPS[role] || (_user && _user.role === 'admin' ? ROLE_CAPS.project_admin : []);
+}
+
+function can(cap) { return myCaps().indexOf(cap) >= 0; }
+
+function applyRoleUI() {
+  const caps = myCaps();
+  ['run', 'edit', 'manage'].forEach(c =>
+    document.body.classList.toggle('no-' + c, caps.indexOf(c) < 0));
+  const note = document.getElementById('role-note');
+  if (note) {
+    const viewer = !can('run') && !can('edit');
+    note.style.display = viewer ? '' : 'none';
+    if (viewer) note.innerHTML =
+      '👁 <span>You have <b>Viewer</b> access to this project — you can read runs, '
+      + 'reports and test cases, but not start runs or change anything.</span>';
+  }
 }
 
 // ── Tabs ───────────────────────────────────────────────
