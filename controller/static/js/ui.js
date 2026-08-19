@@ -131,7 +131,7 @@ async function openAIDebug(runId, rfRunId, suitePath, label) {
       `${(r.prompt.length/1024).toFixed(1)} KB · paste into any AI chat`;
     let meta = `<span>${esc(label || runId)}</span>`;
     if (r.suite_path) meta += `<code>${esc(r.suite_path)}</code>`;
-    if (!r.has_failures) meta += `<span style="color:var(--c-warn)">⚠ no parsed failures in output.xml</span>`;
+    if (!r.has_failures) meta += `<span style="color:var(--c-warn)">${ico('warn')} no parsed failures in output.xml</span>`;
     if (r.model) meta += `<span>model: <code>${esc(r.model)}</code></span>`;
     document.getElementById('aid-meta').innerHTML = meta;
 
@@ -156,8 +156,8 @@ function aidSwitch(pane) {
 function aidCachedBanner(at) {
   const when = new Date(at).toLocaleString();
   return `<div class="aid-cached-banner">
-    <span>📦 Showing a saved analysis from <b>${esc(when)}</b> — no API call made.</span>
-    <button class="etbtn" style="color:#89b4fa;font-weight:700" onclick="aidAnalyze(true)">🔄 Re-run Analysis</button>
+    <span>${ico('clock')} Showing a saved analysis from <b>${esc(when)}</b> — no API call made.</span>
+    <button class="etbtn" style="color:#89b4fa;font-weight:700" onclick="aidAnalyze(true)">${ico('sync')} Re-run Analysis</button>
   </div>`;
 }
 

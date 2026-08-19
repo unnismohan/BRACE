@@ -6,6 +6,54 @@
 
 
 'use strict';
+
+// ── Icons ──────────────────────────────────────────────
+// Markup for one sprite icon. Decorative by default: an icon-only control must
+// carry its meaning in a title/aria-label, never in the glyph alone.
+function ico(name, cls) {
+  return `<svg class="i${cls ? ' ' + cls : ''}" aria-hidden="true" focusable="false">`
+       + `<use href="#i-${name}"/></svg>`;
+}
+
+// ── Theme ──────────────────────────────────────────────
+// Three states, not two. 'system' means we set nothing and let
+// prefers-color-scheme decide, which is what most people actually want; the
+// explicit choices stamp data-theme on <html> so they beat the media query in
+// both directions.
+const THEMES = ['system', 'light', 'dark'];
+// Sprite icons, not text glyphs: ◐ ☀ ☾ render at a different weight and
+// baseline from every other control in the top bar.
+const THEME_ICON = { system: 'contrast', light: 'sun', dark: 'moon' };
+const THEME_LABEL = { system: 'Theme: follows your system',
+                      light:  'Theme: light',
+                      dark:   'Theme: dark' };
+
+function applyTheme(mode) {
+  const root = document.documentElement;
+  if (mode === 'system') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', mode);
+  const btn = document.getElementById('theme-btn');
+  if (btn) { btn.innerHTML = ico(THEME_ICON[mode]); btn.title = THEME_LABEL[mode]; }
+}
+
+function cycleTheme() {
+  const cur = localStorage.getItem('brace_theme') || 'system';
+  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+  localStorage.setItem('brace_theme', next);
+  applyTheme(next);
+  toast(THEME_LABEL[next], 'i', THEME_ICON[next]);
+}
+
+// Run before first paint would be ideal; this file loads in <head>-adjacent
+// order and the class is applied on <html>, so the flash is a single frame at
+// worst. An inline script in <head> handles the true no-flash case.
+applyTheme(localStorage.getItem('brace_theme') || 'system');
+// Density needs <body>, which does not exist while this file is parsing.
+document.addEventListener('DOMContentLoaded', function () {
+  applyDensity(localStorage.getItem('brace_density') || 'comfortable');
+  applyTheme(localStorage.getItem('brace_theme') || 'system');
+});
+
 // ── State ──────────────────────────────────────────────
 let _token     = localStorage.getItem('brace_token') || '';
 let _user      = JSON.parse(localStorage.getItem('brace_user') || 'null');
@@ -103,11 +151,53 @@ function timeAgo(iso) {
   if (d < 86400) return Math.round(d/3600)+'h ago';
   return Math.round(d/86400)+'d ago';
 }
-function toast(msg, type='i') {
+const TOAST_ICON = { s: 'check', e: 'warn', i: 'info' };
+
+// `icon` overrides the per-type default. A confirmation of a setting should
+// show that setting's own icon — a generic sparkle next to "Compact rows" tells
+// the reader nothing about what just happened.
+function toast(msg, type='i', icon) {
   const el = document.createElement('div');
-  el.className = `toast ${type}`; el.textContent = msg;
+  el.className = `toast ${type}` + (String(msg).length > 60 ? ' multiline' : '');
+  // role=status announces it to a screen reader without stealing focus.
+  el.setAttribute('role', type === 'e' ? 'alert' : 'status');
+  const txt = document.createElement('span');
+  txt.textContent = msg;                       // still textContent — never markup
+  el.innerHTML = ico(icon || TOAST_ICON[type] || 'info');
+  el.appendChild(txt);
   document.getElementById('toasts').appendChild(el);
   setTimeout(() => el.remove(), 3500);
+}
+
+// ── Density ────────────────────────────────────────────
+// Compact mode is for the 1000-case tables; it is a preference, not a
+// breakpoint, so it persists per browser rather than following screen width.
+function applyDensity(mode) {
+  document.body.classList.toggle('compact', mode === 'compact');
+  const btn = document.getElementById('density-btn');
+  if (btn) {
+    btn.innerHTML = ico(mode === 'compact' ? 'rows-compact' : 'rows-comfy');
+    btn.title = mode === 'compact' ? 'Density: compact — click for comfortable'
+                                   : 'Density: comfortable — click for compact';
+  }
+}
+
+function toggleDensity() {
+  const next = (localStorage.getItem('brace_density') || 'comfortable') === 'compact'
+             ? 'comfortable' : 'compact';
+  localStorage.setItem('brace_density', next);
+  applyDensity(next);
+  toast(next === 'compact' ? 'Compact rows' : 'Comfortable rows', 'i',
+        next === 'compact' ? 'rows-compact' : 'rows-comfy');
+}
+
+// ── Mobile navigation ──────────────────────────────────
+function toggleSidebar(force) {
+  const sb = document.getElementById('sidebar');
+  const scrim = document.getElementById('sidebar-scrim');
+  const open = force !== undefined ? force : !sb.classList.contains('open');
+  sb.classList.toggle('open', open);
+  if (scrim) scrim.classList.toggle('open', open);
 }
 function showView(n) { document.querySelectorAll('.view').forEach(v => v.classList.remove('active')); document.getElementById('view-'+n).classList.add('active'); }
 function showModal(id) { document.getElementById(id).classList.add('open'); }
@@ -196,7 +286,7 @@ function renderProjNav() {
   _projects.forEach(p => {
     const d = document.createElement('div');
     d.className = 'nav-item' + (_curProj?.id === p.id ? ' active' : '');
-    d.innerHTML = `<span class="ico">📁</span><span>${esc(p.name)}</span>`;
+    d.innerHTML = `<span class="ico">${ico('folder')}</span><span>${esc(p.name)}</span>`;
     d.onclick = () => openProject(p.id);
     nav.appendChild(d);
   });
@@ -223,7 +313,7 @@ function renderProjCards() {
       ${bar}
       <div class="card-meta">
         <span>${p.last_run_at ? 'Last run: '+timeAgo(p.last_run_at) : 'No runs yet'}</span>
-        ${p.has_git ? '<span>🔗 Git linked</span>' : ''}
+        ${p.has_git ? '<span>' + ico('link') + ' Git linked</span>' : ''}
       </div>`;
     d.onclick = () => openProject(p.id);
     c.appendChild(d);
@@ -262,6 +352,7 @@ async function openProject(pid) {
   document.getElementById('tabt-team').style.display =
     _curProj.my_role === 'project_admin' ? '' : 'none';
   applyRoleUI();
+  toggleSidebar(false);          // the drawer is modal on a phone
   renderProjNav(); showView('project'); switchTab('scripts');
   api('GET', `/projects/${pid}/base-path`).then(r => { _basePath = r.base_path; }).catch(() => { _basePath = ''; });
 }
@@ -295,7 +386,7 @@ function applyRoleUI() {
     const viewer = !can('run') && !can('edit');
     note.style.display = viewer ? '' : 'none';
     if (viewer) note.innerHTML =
-      '👁 <span>You have <b>Viewer</b> access to this project — you can read runs, '
+      ico('eye') + ' <span>You have <b>Viewer</b> access to this project — you can read runs, '
       + 'reports and test cases, but not start runs or change anything.</span>';
   }
 }

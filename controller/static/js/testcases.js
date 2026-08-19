@@ -21,13 +21,13 @@ function filterSuites(q) {
   dd.innerHTML = '';
   matches.slice(0,100).forEach(s => {
     const item = document.createElement('div');
-    item.style.cssText = 'padding:7px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0;font-family:monospace';
+    item.style.cssText = 'padding:7px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--c-neutral-bg);font-family:monospace';
     item.textContent = s;
     item.onmousedown = () => {
       document.getElementById('tc-suite').value = s;
       dd.style.display = 'none';
     };
-    item.onmouseover = () => item.style.background = '#e8f0fe';
+    item.onmouseover = () => item.style.background = 'var(--c-surface-3)';
     item.onmouseout  = () => item.style.background = '';
     dd.appendChild(item);
   });
@@ -90,7 +90,7 @@ async function downloadAllScripts(btn) {
   } catch(e) {
     toast('Download failed: ' + (e.message || 'server unreachable'), 'e');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '⬇'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = ico('download'); }
   }
 }
 
@@ -168,27 +168,27 @@ function renderTCs() {
   if (clr) clr.hidden = !active;
 
   tbody.innerHTML = '';
-  if (!_tcs.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--c-muted)">No test cases yet.</td></tr>'; return; }
-  if (!rows.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--c-muted)">No test cases match these filters.</td></tr>'; return; }
+  if (!_tcs.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('file')}</div><h4>No test cases yet</h4><p>A test case points at one .robot file and gives it a stable ID that results are reported against.</p>${can('edit') ? '<button class="btn btn-p btn-sm" onclick="openNewTCModal()">'+ico('plus')+' Add a test case</button>' : ''}</div></td></tr>`; return; }
+  if (!rows.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('search')}</div><h4>No test cases match</h4><p>Nothing here fits the current filters.</p><button class="btn btn-o btn-sm" onclick="tcClearFilters()">Clear filters</button></div></td></tr>`; return; }
   rows.forEach(tc => {
     const tr = document.createElement('tr');
     const suiteTitle = tc.suite_path ? `Suite: ${tc.suite_path}` : 'No suite path set';
     tr.innerHTML=`
       <td><input type="checkbox" class="tc-chk" data-id="${tc.id}" ${_tcPicked.has(tc.id)?'checked':''} onchange="tcToggle(${tc.id},this.checked)"></td>
-      <td><span class="tc-code">${esc(tc.tc_code||'—')}</span></td>
-      <td class="tc-name-cell" title="${esc(suiteTitle)}">
-        ${esc(tc.name)}${tc.suite_path?'<span class="tc-suite-dot" title="'+esc(suiteTitle)+'">🔗</span>':''}${tcSourceBadge(tc)}
+      <td data-label="Code"><span class="tc-code">${esc(tc.tc_code||'—')}</span></td>
+      <td data-label="Name" class="tc-name-cell" title="${esc(suiteTitle)}">
+        ${esc(tc.name)}${tc.suite_path?'<span class="tc-suite-dot" title="'+esc(suiteTitle)+'">'+ico('link')+'</span>':''}${tcSourceBadge(tc)}
       </td>
-      <td class="tc-desc-cell" title="${esc(tc.description||'')}">${esc(tc.description||'—')}</td>
-      <td>${tcTagList(tc).map(t =>
+      <td data-label="Description" class="tc-desc-cell" title="${esc(tc.description||'')}">${esc(tc.description||'—')}</td>
+      <td data-label="Tags">${tcTagList(tc).map(t =>
             `<span class="tagchip" title="Filter by ${esc(t)}" onclick="filterByTag(${jsArg(t)})">${esc(t)}</span>`
           ).join('') || '<span style="color:var(--c-muted)">—</span>'}</td>
-      <td>${tc.last_run_status?`<span class="sbadge ${tc.last_run_status}">${tc.last_run_status}</span>`:'<span style="color:var(--c-muted)">—</span>'}</td>
+      <td data-label="Last run">${tc.last_run_status?`<span class="sbadge ${tc.last_run_status}">${tc.last_run_status}</span>`:'<span style="color:var(--c-muted)">—</span>'}</td>
       <td><div class="bgrp">
-        <button data-cap="run"  class="bico" onclick="quickRunTC(${tc.id})" title="Run">▶</button>
-        <button class="bico" onclick="openTCHistory(${tc.id})" title="Execution history">🕒</button>
-        <button data-cap="edit" class="bico" onclick="editTC(${tc.id})"    title="Edit">✏️</button>
-        <button data-cap="manage" class="bico" onclick="deleteTC(${tc.id})"  title="Delete">🗑</button>
+        <button data-cap="run"  class="bico" onclick="quickRunTC(${tc.id})" title="Run">${ico('run')}</button>
+        <button class="bico" onclick="openTCHistory(${tc.id})" title="Execution history">${ico('clock')}</button>
+        <button data-cap="edit" class="bico" onclick="editTC(${tc.id})"    title="Edit">${ico('edit')}</button>
+        <button data-cap="manage" class="bico" onclick="deleteTC(${tc.id})"  title="Delete">${ico('trash')}</button>
       </div></td>`;
     tbody.appendChild(tr);
   });
@@ -211,7 +211,7 @@ function tcToggle(id, on) { on ? _tcPicked.add(id) : _tcPicked.delete(id); onChk
 function onChkChange() {
   const btn = document.getElementById('btn-runsel');
   btn.style.display = _tcPicked.size ? 'inline-flex' : 'none';
-  btn.textContent = `▶ Run Selected (${_tcPicked.size})`;
+  btn.textContent = `${ico('run')} Run Selected (${_tcPicked.size})`;
   // header checkbox reflects only what is currently visible
   const vis = [...document.querySelectorAll('.tc-chk')];
   const all = document.getElementById('chk-all');
@@ -384,8 +384,8 @@ function renderTCHistory(d) {
       <td>${fmtDur(h.duration_sec)}</td>
       <td style="font-size:12px">${esc((h.run_started||'').replace('T',' ').slice(0,16))}</td>
       <td><div class="bgrp">
-        <button class="bico" title="Open run" onclick="closeModal('modal-tchist');viewRunDetail(${jsArg(h.run_id)})">🔍</button>
-        ${h.has_log?`<button class="bico" title="Robot log" onclick="openReport(${jsArg(`/results/${_curProj.id}/${h.run_id}/${h.rf_run_id}/log.html`)},${jsArg((tc.tc_code||'')+' log')})">📋</button>`:''}
+        <button class="bico" title="Open run" onclick="closeModal('modal-tchist');viewRunDetail(${jsArg(h.run_id)})">${ico('search')}</button>
+        ${h.has_log?`<button class="bico" title="Robot log" onclick="openReport(${jsArg(`/results/${_curProj.id}/${h.run_id}/${h.rf_run_id}/log.html`)},${jsArg((tc.tc_code||'')+' log')})">${ico('log')}</button>`:''}
       </div></td>
     </tr>`).join('');
 }
@@ -414,7 +414,7 @@ let _grpOpen = {};   // group id → expanded? (collapsed by default)
 function renderGroups() {
   const list = document.getElementById('groups-list');
   if (!_groups.length) {
-    list.innerHTML='<div class="empty"><div class="eico">📋</div><p>No suites. Create one and add test cases.</p></div>';
+    list.innerHTML=`<div class="empty"><div class="eico">${ico('log','i-lg')}</div><p>No suites. Create one and add test cases.</p></div>`;
     document.getElementById('grp-toolbar').style.display = 'none';
     return;
   }
@@ -435,8 +435,8 @@ function renderGroups() {
           ${failC?`<span class="pill pill-fail" style="margin-left:4px">✗ ${failC}</span>`:''}
         </div>
         <div class="bgrp">
-          <button class="btn btn-sm btn-a" onclick="event.stopPropagation();runGroup(${g.id})">▶ Run</button>
-          <button class="btn btn-sm btn-o" onclick="event.stopPropagation();openGrpTCModal(${g.id})">＋ TCs</button>
+          <button class="btn btn-sm btn-a" onclick="event.stopPropagation();runGroup(${g.id})">${ico('run')} Run</button>
+          <button class="btn btn-sm btn-o" onclick="event.stopPropagation();openGrpTCModal(${g.id})">${ico('plus')} TCs</button>
           <button class="btn btn-sm btn-d" onclick="event.stopPropagation();deleteGroup(${g.id})">Delete</button>
         </div>
       </div>
@@ -446,7 +446,7 @@ function renderGroups() {
             <span class="tc-code">${esc(tc.tc_code||'')}</span>
             <span class="name">${esc(tc.name)}</span>
             ${tc.last_run_status?`<span class="sbadge ${tc.last_run_status}">${tc.last_run_status}</span>`:''}
-            <button class="bico" onclick="rmTCFromGroup(${g.id},${tc.id})" title="Remove">✕</button>
+            <button class="bico" onclick="rmTCFromGroup(${g.id},${tc.id})" title="Remove">${ico('stop')}</button>
           </div>`).join('') : '<div style="color:var(--c-muted);font-size:12px">No test cases added yet.</div>'}
       </div>
     </div>`;

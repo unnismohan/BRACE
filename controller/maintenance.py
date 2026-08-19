@@ -17,6 +17,7 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 from db import DB_PATH, get_db
 
@@ -51,22 +52,69 @@ _last_result: dict = {}
 
 
 def _dir_bytes(path: Path) -> int:
+    """Recursive size. os.scandir, not rglob: it reuses the stat data the OS
+    already returned with the directory entry instead of issuing a second
+    syscall per file, which is roughly twice as fast on a large tree."""
+    total = 0
     try:
-        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+        stack = [str(path)]
+        while stack:
+            with os.scandir(stack.pop()) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        elif e.is_file(follow_symlinks=False):
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue        # file vanished mid-walk; a run finishing
     except OSError:
         return -1
+    return total
 
 
-def disk_usage() -> dict:
-    """What is actually on disk right now. Used by the admin card and /metrics."""
+# Walking the results volume is expensive — measured at ~7.5s for 384 MB, and it
+# grows with the tree. /metrics is scraped every 15-30s and the admin card is
+# opened at will, so computing it per request meant the walk ran essentially
+# continuously and, on a large enough volume, outlived the scrape timeout.
+# One cached figure serves every caller.
+DISK_CACHE_TTL = max(30, int(os.getenv("BRACE_DISK_CACHE_TTL", "300")))
+_disk_cache: dict = {"at": 0.0, "bytes": -1, "seconds": 0.0}
+
+
+def results_bytes(max_age: Optional[float] = None, force: bool = False) -> dict:
+    """Cached size of the results volume, with the age of the measurement.
+
+    Returns the stale figure rather than blocking when it is still warm — a
+    disk gauge that is five minutes old is useful; a scrape that times out is
+    not.
+    """
+    ttl = DISK_CACHE_TTL if max_age is None else max_age
+    age = time.time() - _disk_cache["at"]
+    if force or _disk_cache["bytes"] < 0 or age > ttl:
+        t0 = time.monotonic()
+        size = _dir_bytes(RESULTS_DIR)
+        _disk_cache.update({"at": time.time(), "bytes": size,
+                            "seconds": round(time.monotonic() - t0, 2)})
+        age = 0.0
+    return {"bytes": _disk_cache["bytes"], "age_sec": round(age, 1),
+            "measure_sec": _disk_cache["seconds"], "ttl_sec": ttl}
+
+
+def disk_usage(force: bool = False) -> dict:
+    """What is on disk. Used by the admin card and /metrics — both read the
+    cached results figure; the database file is a single stat and always live."""
     try:
         db_bytes = DB_PATH.stat().st_size
     except OSError:
         db_bytes = -1
+    r = results_bytes(force=force)
     return {
-        "db_bytes":      db_bytes,
-        "results_bytes": _dir_bytes(RESULTS_DIR),
-        "results_dir":   str(RESULTS_DIR),
+        "db_bytes":       db_bytes,
+        "results_bytes":  r["bytes"],
+        "results_age_sec": r["age_sec"],
+        "results_measure_sec": r["measure_sec"],
+        "results_dir":    str(RESULTS_DIR),
     }
 
 
@@ -283,7 +331,8 @@ def run_maintenance(skip_run_ids=None, allow_vacuum: bool = True,
     except Exception as exc:                          # noqa: BLE001 — a scheduled job must not die
         out["error"] = str(exc)[:300]
         log.exception("Maintenance job failed")
-    out["disk"] = disk_usage()
+    # Files were just deleted, so the cached figure is stale by definition.
+    out["disk"] = disk_usage(force=not dry_run)
     out["seconds"] = round((datetime.now() - started).total_seconds(), 1)
     if not dry_run:
         global _last_result

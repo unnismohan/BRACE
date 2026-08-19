@@ -24,7 +24,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# A test can pin its BRACE code from the repo:  [Tags]    braceid:VDRC_API_01
+# A test can pin its BRACE code from the repo:  [Tags]    braceid:AUTH_TOKEN_01
 _BRACEID_RE = re.compile(r"^braceid[:=](?P<code>[A-Za-z0-9_.-]{1,60})$", re.IGNORECASE)
 
 # Only files under a "Testcases" folder are treated as test cases — the same
@@ -42,6 +42,19 @@ def _is_testcase_file(rel: str) -> bool:
     return any(p == _TESTCASE_DIR for p in parts[:-1])
 
 
+# Parsing is the expensive half of a sync: measured at 49s for 3,832 tests
+# across a real repository, almost all of it inside Robot's parser. A sync
+# normally follows a git pull that touched a handful of files, so results are
+# cached per file and only re-parsed when its mtime or size changes. First sync
+# still pays full price; every one after it is near-instant.
+_parse_cache: dict = {}          # abs path -> (mtime, size, [tests])
+_CACHE_MAX = 20000               # bound it; a pathological repo must not leak
+
+
+def parse_stats() -> dict:
+    return {"cached_files": len(_parse_cache)}
+
+
 def parse_repo(root: Path, testcase_dirs_only: bool = True) -> tuple:
     """Read every .robot file under `root`. Returns (tests, errors).
 
@@ -57,15 +70,31 @@ def parse_repo(root: Path, testcase_dirs_only: bool = True) -> tuple:
     if not root.is_dir():
         return tests, [f"Suites directory does not exist: {root}"]
 
+    seen_paths = set()
     for path in sorted(root.rglob("*.robot")):
         rel = _norm_rel(path, root)
         if testcase_dirs_only and not _is_testcase_file(rel):
             continue
+        key = str(path)
+        seen_paths.add(key)
+        try:
+            st = path.stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+
+        hit = _parse_cache.get(key)
+        if hit and hit[0] == stamp[0] and hit[1] == stamp[1]:
+            tests.extend(hit[2])
+            continue
+
         try:
             suite = TestSuiteBuilder(process_curdir=False).build(str(path))
         except Exception as exc:                      # noqa: BLE001 — reported, not raised
             errors.append(f"{rel}: {type(exc).__name__}: {str(exc)[:200]}")
             continue
+        file_tests = []
         for test in _iter_tests(suite):
             raw_tags = [str(t) for t in (test.tags or [])]
             braceid = None
@@ -76,7 +105,7 @@ def parse_repo(root: Path, testcase_dirs_only: bool = True) -> tuple:
                     braceid = m.group("code")
                 else:
                     plain.append(t)
-            tests.append({
+            file_tests.append({
                 "source_path": rel,
                 "source_test": test.name,
                 "name":        test.name,
@@ -84,6 +113,14 @@ def parse_repo(root: Path, testcase_dirs_only: bool = True) -> tuple:
                 "doc":         (test.doc or "").strip() or None,
                 "braceid":     braceid,
             })
+        tests.extend(file_tests)
+        if len(_parse_cache) < _CACHE_MAX:
+            _parse_cache[key] = (stamp[0], stamp[1], file_tests)
+
+    # Drop entries for files that no longer exist, so a long-lived process does
+    # not hold parsed results for a repo layout that changed underneath it.
+    for gone in [k for k in _parse_cache if k not in seen_paths and k.startswith(str(root))]:
+        _parse_cache.pop(gone, None)
     return tests, errors
 
 

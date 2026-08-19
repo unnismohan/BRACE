@@ -5,24 +5,58 @@
 // <script> tags in index.html in the same sequence as this list.
 
 // ── Settings ───────────────────────────────────────────
-async function loadSettings() {
-  const p=_curProj;
-  document.getElementById('s-name').value=p.name;
-  document.getElementById('s-desc').value=p.description||'';
+// Six sections behind a vertical rail. Each loads its own data when opened, so
+// landing on Settings no longer fires six requests for panels you cannot see.
+// Every value is an arrow function, not a bare reference. loadMembers,
+// loadNotifyConfig and loadDangerZone live in admin.js, which loads AFTER this
+// file — naming them directly evaluates them while they are still undefined,
+// which throws during parse and leaves this const permanently uninitialised.
+// Wrapping defers the lookup to call time, when the whole bundle is present.
+const SETTINGS_PANES = {
+  general: () => {},                       // its fields are filled by loadSettings
+  git:     () => { loadGitConfig(); loadSyncConfig(); },
+  schedules: () => {
+    // The schedule dialog picks a suite from _groups, which is only populated
+    // by the Suites tab — load it here so Settings works as a first stop.
+    if (!_groups.length) loadGroups().finally(loadSchedules);
+    else loadSchedules();
+  },
+  notify:  () => loadNotifyConfig(),
+  members: () => loadMembers(),
+  danger:  () => loadDangerZone(),
+};
+let _setPane = null;
+
+function switchSettings(name) {
+  if (!SETTINGS_PANES[name]) name = 'general';
+  _setPane = name;
+  // Remember where you were — except Danger Zone. Landing on a panel of delete
+  // buttons because it is where you happened to be last time is not a courtesy.
+  if (name === 'danger') localStorage.removeItem('brace_settings_pane');
+  else localStorage.setItem('brace_settings_pane', name);
+  Object.keys(SETTINGS_PANES).forEach(k => {
+    const nav = document.getElementById('snav-'  + k);
+    const pane = document.getElementById('spane-' + k);
+    if (nav)  nav.classList.toggle('active', k === name);
+    if (pane) pane.classList.toggle('active', k === name);
+  });
+  try { SETTINGS_PANES[name](); } catch (e) { /* one panel must not break the rail */ }
+}
+
+async function loadGitConfig() {
   try {
-    const gc=await api('GET', `/projects/${p.id}/git-config`);
-    document.getElementById('s-giturl').value=gc.git_url||'';
-    document.getElementById('s-gitbranch').value=gc.git_branch||'main';
-    document.getElementById('s-gituser').value=gc.git_username||'';
-  } catch {}
-  loadMembers();
-  loadDangerZone();
-  loadNotifyConfig();
-  loadSyncConfig();
-  // The schedule dialog picks a suite from _groups, which is only populated by
-  // the Suites tab — load it here so Settings works as a first stop.
-  if (!_groups.length) loadGroups().finally(loadSchedules);
-  else loadSchedules();
+    const gc = await api('GET', `/projects/${_curProj.id}/git-config`);
+    document.getElementById('s-giturl').value    = gc.git_url || '';
+    document.getElementById('s-gitbranch').value = gc.git_branch || 'main';
+    document.getElementById('s-gituser').value   = gc.git_username || '';
+  } catch (e) { /* a project with no repo configured is normal */ }
+}
+
+function loadSettings() {
+  const p = _curProj;
+  document.getElementById('s-name').value = p.name;
+  document.getElementById('s-desc').value = p.description || '';
+  switchSettings(localStorage.getItem('brace_settings_pane') || 'general');
 }
 
 // ── User manual ────────────────────────────────────────
@@ -59,6 +93,34 @@ const HELP_SECTIONS = [
     <li><b>Run</b> — execute, then read the outcome under <b>Runs</b> and <b>Reports</b>.</li>
   </ol>`},
 
+{ id:'interface', title:'Making It Yours', body:`
+  <p>Three controls in the top bar. All three are remembered in your browser, so they
+  are per-person and per-device — nobody else is affected, and nothing is stored on the
+  server.</p>
+  <h4>Theme</h4>
+  <p>The theme button cycles <b>system → light → dark</b>. <b>System</b> follows whatever
+  your operating system is set to, including switching itself at sunset if your OS does.
+  Pick light or dark explicitly to override that.</p>
+  <p>Robot Framework's own report and log pages open in their original colours in both
+  themes — those are files Robot generates, not screens BRACE draws.</p>
+  <h4>Row density</h4>
+  <p>The density button toggles <b>comfortable</b> and <b>compact</b> rows. Compact takes
+  roughly a third off the height of every table row, which is worth about six extra rows
+  a screen on a laptop and considerably more on a large run. Everything else is unchanged
+  — it is spacing only, not a different view.</p>
+  <h4>On a phone</h4>
+  <ul>
+    <li>The project list becomes a drawer behind the menu button.</li>
+    <li>Wide tables stack into cards, one test case or run per card, each value labelled.</li>
+    <li>Dialogs open full-screen instead of as a letterbox.</li>
+  </ul>
+  <div class="help-note"><p>Reading results on a phone works well. Editing scripts on one
+  does not — the editor is usable but cramped, and it is not what it was built for.</p></div>
+  <h4>Keyboard</h4>
+  <p>Everything is reachable by <span class="help-kbd">Tab</span>, and whatever holds focus
+  is outlined. The first stop on the page is a <b>Skip to content</b> link, which jumps past
+  the top bar and project list in one press.</p>`},
+
 { id:'roles', title:'Roles & Permissions', body:`
   <p>Your role is set <b>per project</b>, so you may be a Tester on one and a Viewer on
   another. A System Admin has Project Admin rights everywhere.</p>
@@ -85,14 +147,14 @@ const HELP_SECTIONS = [
   <p>The <b>Scripts</b> tab is a file explorer and code editor over your project's script folder.</p>
   <h4>Getting scripts in</h4>
   <ul>
-    <li><b>Git Sync</b> (<span class="help-kbd">↻</span>) — clones or updates from the repo in Settings. This is the normal route.</li>
-    <li><b>Upload</b> (<span class="help-kbd">⬆</span>) — individual files, or a <code>.zip</code> that is unpacked for you.</li>
+    <li><b>Git Sync</b> (<span class="help-kbd">${ico('retry')}</span>) — clones or updates from the repo in Settings. This is the normal route.</li>
+    <li><b>Upload</b> (<span class="help-kbd">${ico('upload')}</span>) — individual files, or a <code>.zip</code> that is unpacked for you.</li>
     <li><b>New File</b> (<span class="help-kbd">＋</span>) — create one directly.</li>
   </ul>
   <div class="help-note warn"><p><b>Git sync overwrites.</b> Files that also exist in the
   repository are replaced with the repo's copy. Commit local edits before syncing.</p></div>
   <h4>Getting scripts out</h4>
-  <p>The <span class="help-kbd">⬇</span> button in the Explorer toolbar downloads every
+  <p>The <span class="help-kbd">${ico('download')}</span> button in the Explorer toolbar downloads every
   script in the project — the whole folder tree — as a single <code>.zip</code>. Useful for
   a local backup, sharing a snapshot outside BRACE, or moving scripts to another project by
   hand. The zip name includes the project name and a timestamp, e.g.
@@ -106,11 +168,11 @@ const HELP_SECTIONS = [
   <ul>
     <li>Syntax highlighting for <code>.robot</code>, <code>.py</code>, <code>.yaml</code> and friends.</li>
     <li><span class="help-kbd">Ctrl</span>+<span class="help-kbd">F</span> or <span class="help-kbd">Ctrl</span>+<span class="help-kbd">H</span> — find &amp; replace, with case and regex options.</li>
-    <li>A dot (<b>●</b>) on the tab means unsaved changes. <b>💾 Save</b> writes to disk.</li>
+    <li>A dot (<b>●</b>) on the tab means unsaved changes. <b>${ico('save')} Save</b> writes to disk.</li>
     <li><code>.xlsx</code> and <code>.csv</code> open in a spreadsheet grid with sheet tabs, not as raw text.</li>
   </ul>
   <h4>Run a single file</h4>
-  <p>With a <code>.robot</code> file open, <b>▶ Run</b> executes just that file and streams the
+  <p>With a <code>.robot</code> file open, <b>${ico('run')} Run</b> executes just that file and streams the
   console output underneath. It saves first if there are unsaved changes. This is for quick
   verification while editing — it does not create a tracked run or appear in Reports.</p>`},
 
@@ -135,7 +197,7 @@ const HELP_SECTIONS = [
   filtering on <code>smoke</code> will not pull in <code>smoketest</code>. Click any tag chip in
   the table to filter to it, or use the <b>Tag</b> dropdown, which lists only tags in use.</p>
   <h4>Bulk upload by CSV</h4>
-  <p><b>⬆ Bulk CSV</b> creates many at once. Columns:</p>
+  <p><b>${ico('upload')} Bulk CSV</b> creates many at once. Columns:</p>
   <pre><code>name,description,suite_path,extra_args,suite
 TC_001 Product Family,Creates a product family,UPC/Testcases/TC_001_Product_Family.robot,,UPC Regression
 TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,,UPC Regression|Smoke</code></pre>
@@ -151,8 +213,8 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   Combine it with the <b>Status</b> filter to answer questions like “which of my bulk-upload
   cases are failing?”. <b>Never run</b> lists cases that have no result yet — useful for
   spotting gaps after a CSV import. The counter shows how many of the total are matching.</p>
-  <h4>History of one case (🕒)</h4>
-  <p><b>🕒</b> on a row opens that case's execution timeline — every run it appeared in, newest
+  <h4>History of one case (${ico('clock')})</h4>
+  <p><b>${ico('clock')}</b> on a row opens that case's execution timeline — every run it appeared in, newest
   first, with duration and a link to each run's log.</p>
   <p>Above it: pass rate, number of executions, average duration, and the current streak, plus a
   pass/fail strip you can click to jump to a run. The banner answers the question the aggregate
@@ -165,7 +227,7 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
     <li><b>Passing streak</b> — currently healthy.</li>
   </ul>
   <h4>Running from this tab</h4>
-  <p><b>▶</b> on a row runs that one case. Tick several and use <b>▶ Run Selected</b> for an
+  <p><b>${ico('run')}</b> on a row runs that one case. Tick several and use <b>${ico('run')} Run Selected</b> for an
   ad-hoc run without creating a suite; the button shows how many are selected.</p>
   <p>Selections are kept while you change the filter, so you can search one term, tick a few,
   search another and tick more, then run them all together. The header checkbox selects
@@ -184,16 +246,16 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
         across several searches before adding. Cases already in the suite are never listed,
         and re-adding one is harmless.</li>
     <li>Click a suite header to expand or collapse it; <b>Expand All</b> / <b>Collapse All</b> act on every suite.</li>
-    <li>Cases run in the order listed. <b>✕</b> removes a case from the suite without deleting it.</li>
-    <li><b>▶ Run</b> executes the whole suite as one tracked run.</li>
+    <li>Cases run in the order listed. <b>${ico('stop')}</b> removes a case from the suite without deleting it.</li>
+    <li><b>${ico('run')} Run</b> executes the whole suite as one tracked run.</li>
   </ul>
   <div class="help-note"><p>Deleting a suite never deletes the test cases inside it.</p></div>`},
 
 { id:'runs', title:'Running Tests', body:`
   <h4>Starting a run</h4>
   <ul>
-    <li><b>Runs → ▶ Trigger Run</b> — pick a suite, select individual cases, or choose <b>By Tag</b>.</li>
-    <li><b>▶ Run</b> on a suite, or <b>▶</b> on a single test case.</li>
+    <li><b>Runs → ${ico('run')} Trigger Run</b> — pick a suite, select individual cases, or choose <b>By Tag</b>.</li>
+    <li><b>${ico('run')} Run</b> on a suite, or <b>${ico('run')}</b> on a single test case.</li>
   </ul>
   <p>Optionally name the run so it's easy to find later, and pass extra Robot Framework
   arguments that apply to the whole run.</p>
@@ -208,7 +270,7 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   order</b> — e.g. one case creates the subscriber a later case then modifies. Cases that
   share test data or a login session are not safe to run at the same time.</p></div>
   <h4>Watching progress</h4>
-  <p>Open <b>🔍 Details</b> to watch live: the progress bar, per-case status and console output
+  <p>Open <b>${ico('search')} Details</b> to watch live: the progress bar, per-case status and console output
   update as each case finishes — no need to reopen the window. The server pushes those updates
   rather than the page asking for them, so a case flipping to failed appears at once, and a
   1000-case run costs no more to watch than a 10-case one. Where a proxy blocks event streams
@@ -232,17 +294,17 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   <div class="help-note"><p>If the server restarts, runs that were queued or running are marked
   <b>cancelled</b> rather than being left stuck forever. Start them again.</p></div>
   <h4>Stopping a run</h4>
-  <p><b>✕</b> on a running or queued run cancels it. Cases already finished keep their results;
+  <p><b>${ico('stop')}</b> on a running or queued run cancels it. Cases already finished keep their results;
   the one executing is terminated and the rest never start.</p>
   <h4>Re-running only what failed</h4>
-  <p>After a failed run, <b>↻ Re-run Failed</b> — in run details, or the <b>↻</b> icon on the
+  <p>After a failed run, <b>${ico('retry')} Re-run Failed</b> — in run details, or the <b>${ico('retry')}</b> icon on the
   Runs list — starts a new run containing <i>only</i> the failed cases. On a 44-case regression
   where 3 failed, that is 3 cases instead of 44.</p>
   <p>The new run is named after the original with a retry count, e.g.
   <code>UPC Regression run (retry 3)</code>, and its details link back to the run it came from,
   so the chain stays traceable. Re-running a retry does not stack the suffix.</p>
   <h4>Finding a case in a large run</h4>
-  <p>The case list in <b>🔍 Details</b> is filtered and paged, so a run with a thousand cases
+  <p>The case list in <b>${ico('search')} Details</b> is filtered and paged, so a run with a thousand cases
   opens as fast as one with ten.</p>
   <ul>
     <li>The chips at the top — <b>All</b>, <b>✗ failed</b>, <b>✓ passed</b> — filter the list.
@@ -264,7 +326,7 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
 { id:'schedules', title:'Scheduled Runs', body:`
   <p>A schedule runs a <b>suite</b> automatically on a repeating timetable — a nightly
   regression, a smoke set every four hours. Set them up under
-  <b>Settings → ⏰ Schedules</b>. Everyone can see them; <span class="help-role t">Tester</span>
+  <b>Settings → ${ico('alarm')} Schedules</b>. Everyone can see them; <span class="help-role t">Tester</span>
   and above can create and change them.</p>
   <h4>Creating one</h4>
   <ul>
@@ -273,6 +335,17 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
         <b>Every 4 hours</b>, <b>Weekly Sun 03:00</b>) or type your own.</li>
     <li><b>Enabled</b> — untick to keep the schedule but stop it firing.</li>
   </ul>
+  <h4>The schedules table</h4>
+  <p>One row per schedule, five columns:</p>
+  <table><thead><tr><th>Column</th><th>Shows</th></tr></thead><tbody>
+    <tr><td><b>Suite</b></td><td>What runs.</td></tr>
+    <tr><td><b>Schedule</b></td><td>The timetable in plain English, with the raw cron beside it.</td></tr>
+    <tr><td><b>Next run</b></td><td>When it fires next — blank if the schedule is disabled.</td></tr>
+    <tr><td><b>Last run</b></td><td>Its outcome, pass/fail counts and when. <i>never</i> if it has not fired yet.</td></tr>
+    <tr><td>—</td><td><b>Enable</b>/<b>Disable</b>, edit and delete.</td></tr>
+  </tbody></table>
+  <p>A disabled schedule stays in the list, dimmed, so you can see it exists and turn it back
+  on. Its buttons stay at full strength.</p>
   <h4>Reading the cron box</h4>
   <p>Five fields: <code>minute hour day month day-of-week</code>.</p>
   <pre><code>0 2 * * *      02:00 every day
@@ -355,20 +428,20 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   </ul>`},
 
 { id:'aidebug', title:'AI Debug Assistant', body:`
-  <p>When a run fails, <b>🤖 Debug</b> collects the evidence and produces a diagnosis.
-  It appears next to failed cases in run details, and in the editor after a failed <b>▶ Run</b>.</p>
+  <p>When a run fails, <b>${ico('robot')} Debug</b> collects the evidence and produces a diagnosis.
+  It appears next to failed cases in run details, and in the editor after a failed <b>${ico('run')} Run</b>.</p>
   <p>It gathers the parsed failure and failing keyword chain from <code>output.xml</code>, the
   console output, the test suite source, and the resource files that suite imports.</p>
   <h4>Two ways to use it</h4>
   <ul>
-    <li><b>✨ Analyze</b> — if your administrator has connected a model, the diagnosis streams
+    <li><b>${ico('sparkle')} Analyze</b> — if your administrator has connected a model, the diagnosis streams
         directly into the window.</li>
-    <li><b>📋 Copy Prompt</b> — always available. Copies (or downloads) a complete,
+    <li><b>${ico('log')} Copy Prompt</b> — always available. Copies (or downloads) a complete,
         self-contained prompt you can paste into any AI chat on your own machine. This is
         the option on an air-gapped server.</li>
   </ul>
   <p>A completed analysis is remembered. Reopening the same failure shows the saved result
-  instantly without calling the model again; <b>🔄 Re-run Analysis</b> forces a fresh one —
+  instantly without calling the model again; <b>${ico('sync')} Re-run Analysis</b> forces a fresh one —
   worth doing after you've changed the script.</p>
   <div class="help-note warn"><p>With in-app analysis enabled, the prompt — including your
   test source and logs — is sent to the configured provider. If that provider is outside your
@@ -387,6 +460,17 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   trends, not to judge individual effort.</p></div>`},
 
 { id:'settings', title:'Project Settings', body:`
+  <p class="help-lead">Everything that configures one project, behind a list of sections down
+  the left: <b>General</b>, <b>Git &amp; Sync</b>, <b>Schedules</b>, <b>Notifications</b>,
+  <b>Members</b> and <b>Danger Zone</b>.</p>
+  <p>Only the section you pick loads, so opening Settings does not go and fetch six things you
+  cannot see. BRACE remembers where you were and returns you there next time — with one
+  deliberate exception: it never re-opens on <b>Danger Zone</b>. Landing on a panel of delete
+  buttons because that is where you happened to be last is not a courtesy.</p>
+  <p>On a narrow screen the section list becomes a row of chips above the panel.</p>
+  <h4>General</h4>
+  <p>The project's name and description. The name is what appears in the sidebar and on every
+  report.</p>
   <h4>Git Repository</h4>
   <p>Set the repository URL, branch, username and access token, then <b>Save Git Config</b>.
   <b>Sync Now</b> pulls immediately. The token is stored encrypted and never shown again —
@@ -399,8 +483,8 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
       <code>Testcases</code> folder becomes a BRACE test case; its name, <code>[Tags]</code> and
       <code>[Documentation]</code> come from the file.</li>
   </ul>
-  <p><b>🔍 Preview</b> reports exactly what would change without writing anything — worth
-  running first on a project that already has hand-made cases. <b>↻ Sync Test Cases</b> applies
+  <p><b>${ico('search')} Preview</b> reports exactly what would change without writing anything — worth
+  running first on a project that already has hand-made cases. <b>${ico('retry')} Sync Test Cases</b> applies
   it, and in git mode a Git Sync from the Scripts tab reconciles the cases too, so pulling
   scripts and updating the case list are one action.</p>
   <p>Three guarantees make this safe to run repeatedly:</p>
@@ -417,7 +501,7 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   removed and one added. To keep a code across renames, put it in the repository:</p>
   <pre><code>*** Test Cases ***
 Verify Successful Login
-    [Tags]    smoke    braceid:VDRC_LOGIN_01</code></pre>
+    [Tags]    smoke    braceid:LOGIN_01</code></pre>
   <p>That tag sets the BRACE test case code and is not shown as a tag. If the same code is
   already used by another project the sync assigns a generated one instead and says so —
   codes are unique across the whole server.</p>
@@ -451,7 +535,9 @@ Verify Successful Login
   <code>.robot</code> files on disk — scripts are only ever changed from the Scripts tab or by Git sync.</p></div>`},
 
 { id:'admin', title:'Administration', body:`
-  <p><span class="help-role sa">System Admin</span> only, from the sidebar.</p>
+  <p><span class="help-role sa">System Admin</span> only, from the sidebar. Five tabs:
+  <b>Users</b>, <b>AI Assistant</b>, <b>Email</b>, <b>Housekeeping</b> and <b>Audit Log</b>.
+  Each loads when you open it, and BRACE returns you to the tab you used last.</p>
   <h4>Users</h4>
   <p>Create accounts individually or by CSV (<code>username,password,system_role,full_name,email</code>).
   New users must change their password at first login. Creating an account does not grant
@@ -463,7 +549,7 @@ Verify Successful Login
     <li><b>API Base URL</b> and <b>Model</b> — as issued by your provider.</li>
     <li><b>API Key</b> — stored encrypted, never returned to the browser. Blank on re-save keeps the current key.</li>
     <li><b>Verify TLS certificate</b> — untick only for an internal endpoint with a self-signed certificate.</li>
-    <li><b>🔌 Test Connection</b> — makes a real call and reports the exact error if it fails.</li>
+    <li><b>${ico('plug')} Test Connection</b> — makes a real call and reports the exact error if it fails.</li>
   </ul>
   <h4>Email Notifications</h4>
   <p>One SMTP account for the whole server, with presets for Gmail, Microsoft 365, SendGrid,
@@ -483,9 +569,18 @@ Verify Successful Login
     <li><b>Compaction</b> — reclaims freed database space, and only when something was actually
       deleted. It is skipped automatically while any test is executing.</li>
   </ul>
-  <p>The card shows current database and disk usage. <b>🔍 Preview (dry run)</b> reports what
-  would be removed without touching anything; <b>🧹 Run Now</b> does it. A run that is still
+  <p>The card shows current database and disk usage. <b>${ico('search')} Preview (dry run)</b> reports what
+  would be removed without touching anything; <b>${ico('broom')} Run Now</b> does it. A run that is still
   executing is never purged, whatever its age.</p>
+  <div class="help-note"><p><b>"0 runs would be deleted" is usually the floor, not a fault.</b>
+  <i>Always keep</i> protects the newest N runs of each project regardless of age, so a project
+  with 20 runs and a floor of 20 has nothing eligible — however old those runs are. The orphan
+  sweep still reclaims space in that state, which is why a preview can report 0 runs and
+  several hundred megabytes in the same breath.</p></div>
+  <p><b>Results on disk</b> is a <i>sample</i>, not a live figure. Measuring it means walking the
+  whole results volume, which takes seconds and grows with the tree, so one measurement is
+  shared by this card and the monitoring endpoint. The tile says how old the reading is and
+  how long it took; <b>re-measure</b> forces a fresh one.</p>
   <div class="help-note warn"><p>Retention is set in the Deployment, not in this screen —
   a value editable in two places drifts. The card reports what the pod is configured with.</p></div>
   <h4>Audit Log</h4>

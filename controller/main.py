@@ -4246,10 +4246,16 @@ def _trigger_group_run(group_id: int):
 # ══════════════════════════════════════════════════════════════════
 
 @app.get("/api/admin/maintenance")
-def get_maintenance(user=Depends(_require_sys_admin)):
-    """Retention settings, current disk usage, and the last job's outcome."""
+async def get_maintenance(refresh: bool = False, user=Depends(_require_sys_admin)):
+    """Retention settings, current disk usage, and the last job's outcome.
+
+    Disk size comes from the shared cache, so opening Administration is instant
+    instead of waiting on a walk of the whole results volume. refresh=1 forces a
+    fresh measurement for the operator who wants the live number.
+    """
+    disk = await asyncio.to_thread(maintenance.disk_usage, refresh)
     return {"config": maintenance.config(),
-            "disk":   maintenance.disk_usage(),
+            "disk":   disk,
             "last":   maintenance.last_result(),
             "busy":   bool(_active_runs) or bool(_active_procs)}
 
@@ -4372,13 +4378,18 @@ def metrics():
     emit("brace_test_duration_seconds_count", "counter",
          "Test cases contributing to the duration sum.", m["test_count"])
 
-    # Disk is the failure mode most likely to take the pod down quietly
-    try:
-        results_bytes = sum(p.stat().st_size for p in RESULTS_DIR.rglob("*") if p.is_file())
-    except OSError:
-        results_bytes = -1
+    # Disk is the failure mode most likely to take the pod down quietly.
+    # Read from the cache: measuring it costs a full recursive walk of the
+    # results volume (~7.5s at 384 MB, and it only grows). Doing that per scrape
+    # meant the walk ran almost continuously and would eventually outlive the
+    # scrape timeout — the monitoring would fail before the disk did.
+    _disk = maintenance.results_bytes()
     emit("brace_results_disk_bytes", "gauge",
-         "Bytes consumed by run results on disk.", results_bytes)
+         "Bytes consumed by run results on disk. Sampled, not live — see "
+         "brace_results_disk_age_seconds.", _disk["bytes"])
+    emit("brace_results_disk_age_seconds", "gauge",
+         "Age of the results-disk sample. Compare with BRACE_DISK_CACHE_TTL.",
+         _disk["age_sec"])
     try:
         db_bytes = DB_PATH.stat().st_size
     except OSError:

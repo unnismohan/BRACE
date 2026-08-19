@@ -120,7 +120,7 @@ function renderTreeNode(node, depth, filter, openState, parentPath) {
     const key = 'td_' + folderPath;
     const isOpen = openState[key] === true; // default collapsed
     const arrowCls = isOpen ? 'open' : 'closed';
-    const folderIco = isOpen ? '📂' : '📁';
+    const folderIco = ico(isOpen ? 'folder-open-solid' : 'folder-solid');
     html += `<div class="tree-row folder-row" data-key="${esc(key)}" data-path="${esc(folderPath)}" onclick="toggleTreeDir(this)" oncontextmenu="return showPathMenu(event,this)">`;
     html += `<span style="width:${indent}px" class="tree-indent"></span>`;
     html += `<span class="tree-arrow ${arrowCls}">▾</span>`;
@@ -136,11 +136,17 @@ function renderTreeNode(node, depth, filter, openState, parentPath) {
     if (filter && !f.name.toLowerCase().includes(filter)) return;
     const ext = f.name.split('.').pop().toLowerCase();
     const active = f.path === _curFile ? ' active' : '';
-    const ico = ext === 'robot' ? '🤖' : ext === 'py' ? '🐍' : ext === 'xlsx' || ext === 'csv' ? '📊' : ext === 'yaml' || ext === 'yml' ? '⚙' : '📄';
+    // Named fileIco, not ico — a local `ico` would shadow the sprite helper.
+    // Shape carries the file's kind; .ext-* in CSS carries its colour.
+    const fileIco = ico(
+      ext === 'robot' || ext === 'resource' ? 'robot'
+      : ext === 'xlsx' || ext === 'csv'     ? 'chart'
+      : ext === 'yaml' || ext === 'yml'     ? 'gear'
+      : 'file-solid');
     html += `<div class="tree-row ext-${esc(ext)}${active}" data-path="${esc(f.path)}" onclick="openFile(this.dataset.path)" oncontextmenu="return showPathMenu(event,this)" title="${esc(f.path)}">`;
     html += `<span style="width:${indent}px" class="tree-indent"></span>`;
     html += `<span class="tree-arrow" style="visibility:hidden">▾</span>`;
-    html += `<span class="tree-icon">${ico}</span>`;
+    html += `<span class="tree-icon">${fileIco}</span>`;
     html += `<span class="tree-label">${esc(f.name)}</span>`;
     html += `</div>`;
   });
@@ -170,7 +176,7 @@ function toggleTreeDir(row) {
   childEl.classList.toggle('closed', isOpen);
   arrow.classList.toggle('open', !isOpen);
   arrow.classList.toggle('closed', isOpen);
-  icon.textContent = isOpen ? '📁' : '📂';
+  icon.innerHTML = ico(open ? 'folder-open-solid' : 'folder-solid');
   _treeOpenState[key] = !isOpen;
 }
 
@@ -188,15 +194,15 @@ function showPathMenu(evt, row) {
 
   let items = '';
   if (_pathMenuIsDir) {
-    items += `<div class="path-menu-item" onclick="fsNewFile()">📄 New File here…</div>`;
-    items += `<div class="path-menu-item" onclick="fsNewFolder()">📁 New Folder here…</div>`;
+    items += `<div class="path-menu-item" onclick="fsNewFile()">${ico('file')} New File here…</div>`;
+    items += `<div class="path-menu-item" onclick="fsNewFolder()">${ico('folder')} New Folder here…</div>`;
     items += `<div class="path-menu-sep"></div>`;
   }
-  items += `<div class="path-menu-item" onclick="fsRename()">✏️ Rename…</div>`;
-  items += `<div class="path-menu-item danger" onclick="fsDelete()">🗑 Delete ${_pathMenuIsDir ? 'Folder' : ''}</div>`;
+  items += `<div class="path-menu-item" onclick="fsRename()">${ico('edit')} Rename…</div>`;
+  items += `<div class="path-menu-item danger" onclick="fsDelete()">${ico('trash')} Delete ${_pathMenuIsDir ? 'Folder' : ''}</div>`;
   items += `<div class="path-menu-sep"></div>`;
-  items += `<div class="path-menu-item" onclick="copyPath(false)">🔗 Copy Relative Path</div>`;
-  items += `<div class="path-menu-item" onclick="copyPath(true)">💽 Copy Full Container Path</div>`;
+  items += `<div class="path-menu-item" onclick="copyPath(false)">${ico('link')} Copy Relative Path</div>`;
+  items += `<div class="path-menu-item" onclick="copyPath(true)">${ico('file')} Copy Full Container Path</div>`;
 
   const menu = document.getElementById('path-menu');
   menu.innerHTML = `<div class="path-menu-hd">${esc(name)}</div>` + items;
@@ -218,8 +224,8 @@ function showRootMenu(evt) {
   const menu = document.getElementById('path-menu');
   menu.innerHTML =
     '<div class="path-menu-hd">Project root</div>' +
-    '<div class="path-menu-item" onclick="fsNewFile()">📄 New File…</div>' +
-    '<div class="path-menu-item" onclick="fsNewFolder()">📁 New Folder…</div>';
+    '<div class="path-menu-item" onclick="fsNewFile()">' + ico('file') + ' New File…</div>' +
+    '<div class="path-menu-item" onclick="fsNewFolder()">' + ico('folder') + ' New Folder…</div>';
   menu.style.display = 'block';
   menu.style.left = Math.min(evt.clientX, window.innerWidth  - 250) + 'px';
   menu.style.top  = Math.min(evt.clientY, window.innerHeight - menu.offsetHeight - 12) + 'px';
@@ -409,7 +415,7 @@ async function runEditorFile() {
   const cons = document.getElementById('qrun-console');
   const status = document.getElementById('qrun-status');
   btn.classList.add('running');
-  btn.textContent = '⏳ Running…';
+  btn.innerHTML = ico('clock') + ' Running…';
   btn.disabled = true;
   cons.textContent = '';
   status.textContent = 'running';
@@ -454,7 +460,7 @@ async function runEditorFile() {
     if (e.name !== 'AbortError') { status.textContent = 'error'; cons.textContent += '\n'+e.message; }
   } finally {
     btn.classList.remove('running');
-    btn.textContent = '▶ Run';
+    btn.innerHTML = ico('run') + ' Run';
     btn.disabled = false;
     _qrunAbort = null;
   }

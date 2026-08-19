@@ -158,27 +158,27 @@ function renderRuns() {
   if (clr) clr.hidden = !active;
 
   tbody.innerHTML='';
-  if (!_runs.length) { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--c-muted)">No runs yet.</td></tr>'; return; }
-  if (!rows.length)  { tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--c-muted)">No runs match these filters.</td></tr>'; return; }
+  if (!_runs.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('run')}</div><h4>Nothing has run yet</h4><p>Pick a suite or a few test cases and start a run — results, reports and failure detail all land here.</p>${can('run') ? '<button class="btn btn-a btn-sm" onclick="openRunModal()">'+ico('run')+' Start a run</button>' : ''}</div></td></tr>`; return; }
+  if (!rows.length)  { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('search')}</div><h4>No runs match</h4><p>Nothing here fits the current filters.</p><button class="btn btn-o btn-sm" onclick="runsClearFilters()">Clear filters</button></div></td></tr>`; return; }
   rows.forEach(r => {
     const done = r.passed+r.failed;
     const pct  = r.total ? Math.round(r.passed/r.total*100) : 0;
     const fpct = r.total ? Math.round(r.failed/r.total*100) : 0;
     const tr=document.createElement('tr');
     tr.innerHTML=`
-      <td><code style="font-size:11px">${esc(r.run_id)}</code></td>
-      <td>${esc(r.run_name||'—')}</td>
-      <td>${esc(r.triggered_by||'—')}</td>
-      <td><span class="sbadge ${r.status}">${r.status}</span></td>
-      <td style="min-width:140px">
+      <td data-label="Run ID"><code style="font-size:11px">${esc(r.run_id)}</code></td>
+      <td data-label="Name">${esc(r.run_name||'—')}</td>
+      <td data-label="By">${esc(r.triggered_by||'—')}</td>
+      <td data-label="Status"><span class="sbadge ${r.status}">${r.status}</span></td>
+      <td data-label="Results" style="min-width:140px">
         <div style="font-size:11px;margin-bottom:2px">✓${r.passed} ✗${r.failed} / ${r.total}</div>
         <div class="pbar"><div class="fill" style="width:${r.total?done/r.total*100:0}%;background:linear-gradient(90deg,var(--c-ok) ${pct}%,var(--c-err) 0)"></div></div>
       </td>
-      <td style="white-space:nowrap">${r.started_at?r.started_at.replace('T',' ').slice(0,16):'—'}</td>
+      <td data-label="Started" style="white-space:nowrap">${r.started_at?r.started_at.replace('T',' ').slice(0,16):'—'}</td>
       <td><div class="bgrp">
-        <button class="bico" onclick="viewRunDetail(${jsArg(r.run_id)})" title="Details">🔍</button>
-        ${(r.status==='running'||r.status==='queued')?`<button class="bico" onclick="cancelRun(${jsArg(r.run_id)})" title="Cancel">✕</button>`:''}
-        ${(r.failed>0 && r.status!=='running' && r.status!=='queued')?`<button class="bico" onclick="rerunFailed(${jsArg(r.run_id)})" title="Re-run the ${r.failed} failed test case(s)">↻</button>`:''}
+        <button class="bico" onclick="viewRunDetail(${jsArg(r.run_id)})" title="Details">${ico('search')}</button>
+        ${(r.status==='running'||r.status==='queued')?`<button class="bico" onclick="cancelRun(${jsArg(r.run_id)})" title="Cancel">${ico('stop')}</button>`:''}
+        ${(r.failed>0 && r.status!=='running' && r.status!=='queued')?`<button class="bico" onclick="rerunFailed(${jsArg(r.run_id)})" title="Re-run the ${r.failed} failed test case(s)">${ico('retry')}</button>`:''}
       </div></td>`;
     tbody.appendChild(tr);
   });
@@ -344,10 +344,10 @@ function renderRunHead(r) {
     </div>
     <div class="pbar" style="margin-bottom:12px"><div class="fill" style="width:${barPct}%;background:linear-gradient(90deg,var(--c-ok) ${pct}%,var(--c-err) 0)"></div></div>
     ${(r.has_combined_report || failed)?`<div class="bgrp" style="margin-bottom:12px">
-      ${r.has_combined_report?`<button class="btn btn-sm btn-p" onclick="openReport('/results/${_curProj.id}/${runId}/combined/report.html','Combined Report')">📊 Combined Report</button>
-      <button class="btn btn-sm btn-o" onclick="openReport('/results/${_curProj.id}/${runId}/combined/log.html','Combined Log')">📋 Combined Log</button>`:''}
+      ${r.has_combined_report?`<button class="btn btn-sm btn-p" onclick="openReport('/results/${_curProj.id}/${runId}/combined/report.html','Combined Report')">${ico('chart')} Combined Report</button>
+      <button class="btn btn-sm btn-o" onclick="openReport('/results/${_curProj.id}/${runId}/combined/log.html','Combined Log')">${ico('log')} Combined Log</button>`:''}
       ${(failed && r.status!=='running' && r.status!=='queued')
-        ?`<button class="btn btn-sm btn-a" onclick="rerunFailed(${jsArg(runId)})">↻ Re-run Failed (${failed})</button>`:''}
+        ?`<button class="btn btn-sm btn-a" onclick="rerunFailed(${jsArg(runId)})">${ico('retry')} Re-run Failed (${failed})</button>`:''}
     </div>`:''}`;
   // Only touch the DOM when something changed — otherwise a 3s repaint kills
   // text selection and any :hover in the header.
@@ -391,7 +391,7 @@ function rdSetStatus(s) {
 function rdSearchInput(v) {
   if (!_rd) return;
   clearTimeout(_rdQTimer);
-  // Debounced — typing "VDRC_API" should be one query, not eight.
+  // Debounced — typing "AUTH_TOKEN" should be one query, not eight.
   _rdQTimer = setTimeout(() => { if (_rd) { _rd.q = v; loadRunItems(true); } }, 300);
 }
 
@@ -450,7 +450,7 @@ function rdItemRow(it) {
       <div class="bgrp">
         ${it.has_report?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/report.html`)},${jsArg((it.tc_name||'')+' Report')})">Report</button>`:''}
         ${it.has_log   ?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/log.html`)},${jsArg((it.tc_name||'')+' Log')})">Log</button>`:''}
-        ${it.status==='failed'?`<button class="btn btn-sm btn-a" onclick="openAIDebug(${jsArg(runId)},${jsArg(it.rf_run_id||'')},null,${jsArg(it.tc_name||'')})" title="AI-assisted debugging">🤖 Debug</button>`:''}
+        ${it.status==='failed'?`<button class="btn btn-sm btn-a" onclick="openAIDebug(${jsArg(runId)},${jsArg(it.rf_run_id||'')},null,${jsArg(it.tc_name||'')})" title="AI-assisted debugging">${ico('robot')} Debug</button>`:''}
       </div>
     </div>${open?failureBlock(_rd.detail[it.id]):''}`;
 }
@@ -730,8 +730,8 @@ function renderRunHistory(runs) {
       <span class="srow-name"><b>${esc(r.run_name || r.run_id)}</b></span>
       <span class="srow-num" style="min-width:auto">${r.total} TC${r.total===1?'':'s'}</span>
       <span class="srow-bar" title="${pct}% passed"><i style="width:${pct}%;background:${r.failed?'linear-gradient(90deg,var(--c-ok) '+pct+'%,var(--c-err) '+pct+'%)':'var(--c-ok)'};width:100%"></i></span>
-      <span class="srow-num" style="color:#15803d">✓ ${r.passed}</span>
-      <span class="srow-num" style="color:#b91c1c;min-width:44px">✗ ${r.failed}</span>
+      <span class="srow-num" style="color:var(--c-ok-text)">✓ ${r.passed}</span>
+      <span class="srow-num" style="color:var(--c-err-text);min-width:44px">✗ ${r.failed}</span>
       <span class="srow-num" style="min-width:104px">${when}</span>
     </div>`;
   }).join('');

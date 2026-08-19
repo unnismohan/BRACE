@@ -58,6 +58,8 @@ services:
       BRACE_MAINT_CRON: "30 2 * * *"
       # Live run updates over SSE; past this many watchers a browser polls.
       BRACE_SSE_MAX_SUBS: "20"
+      # How long a results-volume size measurement is reused, in seconds.
+      BRACE_DISK_CACHE_TTL: "300"
       # RMQ not needed locally unless testing agent1
       RMQ_HOST:     localhost
       RMQ_PORT:     "5672"

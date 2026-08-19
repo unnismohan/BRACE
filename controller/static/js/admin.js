@@ -79,7 +79,7 @@ function renderTeamTable(rows) {
       <th>Last Active</th>
     </tr></thead>
     <tbody>${rows.map(r => {
-      const pc = r.pass_rate >= 90 ? '#15803d' : r.pass_rate >= 70 ? '#b45309' : '#b91c1c';
+      const pc = r.pass_rate >= 90 ? 'var(--c-ok-text)' : r.pass_rate >= 70 ? 'var(--c-warn-text)' : 'var(--c-err-text)';
       const bar = Math.round(r.tests / maxTests * 100);
       return `<tr>
         <td><b>${esc(r.user)}</b>${r.cancelled ? `<span class="kpi-sub"> · ${r.cancelled} cancelled</span>` : ''}</td>
@@ -100,7 +100,7 @@ function renderTeamTable(rows) {
     }).join('')}</tbody>`;
 }
 
-const TEAM_COLORS = ['#0099ff','#ee743b','#22c55e','#a855f7','#f59e0b','#06b6d4','#ec4899','#84cc16'];
+const TEAM_COLORS = ['var(--c-blue)','var(--c-accent)','var(--c-ok)','#a855f7','var(--c-warn)','#06b6d4','#ec4899','#84cc16'];
 
 function renderTeamChart(daily, testers) {
   const el = document.getElementById('team-chart');
@@ -176,27 +176,44 @@ async function loadSchedules() {
       box.innerHTML = '<div class="picker-empty">No schedules. Suites run only when triggered manually.</div>';
       return;
     }
-    box.innerHTML = rows.map(s => {
-      const desc = cronDescribe(s.cron_expr);
-      const next = (s.next_runs||[])[0];
-      const lr = s.last_run;
-      return `<div class="sched-row ${s.enabled?'':'sched-off'}">
-        <div class="sched-info">
-          <b>${esc(s.group_name)}</b> <code>${esc(s.cron_expr)}</code>
-          <span>${desc ? esc(desc) : 'Custom schedule'}
-            ${s.enabled && next ? ` · next ${esc(next.replace('T',' ').slice(0,16))}` : ''}
-            ${!s.enabled ? ' · <b>disabled</b>' : ''}
-          </span>
-          ${lr ? `<span>last run: <span class="sbadge ${esc(lr.status)}">${esc(lr.status)}</span>
-            ✓${lr.passed} ✗${lr.failed} · ${esc((lr.started_at||'').replace('T',' ').slice(0,16))}</span>` : ''}
-        </div>
-        <div class="sched-act">
-          <button class="fb-clear" onclick="toggleSchedule(${s.id},${s.enabled?0:1})">${s.enabled?'Disable':'Enable'}</button>
-          <button class="bico" title="Edit" onclick='openSchedModal(${jsArg(JSON.stringify(s))})'>✏️</button>
-          <button class="bico" title="Delete" onclick="deleteSchedule(${s.id})">🗑</button>
-        </div>
-      </div>`;
-    }).join('');
+    // A table, not stacked rows. The old markup put the last-run badge inside
+    // a `.sched-info span`, which the stylesheet forces to display:block — so
+    // the status stretched into a full-width pink bar. Columns also let the
+    // eye compare "next run" down the list, which is the actual question.
+    box.innerHTML = `<div class="tbl-wrap"><table class="stackable sched-tbl">
+      <thead><tr>
+        <th>Suite</th><th>Schedule</th><th>Next run</th><th>Last run</th>
+        <th style="width:150px"></th>
+      </tr></thead>
+      <tbody>${rows.map(s => {
+        const desc = cronDescribe(s.cron_expr);
+        const next = (s.next_runs||[])[0];
+        const lr = s.last_run;
+        return `<tr class="${s.enabled?'':'sched-off'}">
+          <td data-label="Suite"><b>${esc(s.group_name)}</b>${
+            s.enabled ? '' : ' <span class="sbadge pending">disabled</span>'}</td>
+          <td data-label="Schedule">
+            ${desc ? esc(desc) : 'Custom'}
+            <code class="sched-cron">${esc(s.cron_expr)}</code>
+          </td>
+          <td data-label="Next run" class="u-nowrap">${
+            s.enabled && next
+              ? esc(next.replace('T',' ').slice(0,16))
+              : '<span class="u-muted">—</span>'}</td>
+          <td data-label="Last run">${
+            lr ? `<span class="sbadge ${esc(lr.status)}">${esc(lr.status)}</span>
+                  <span class="sched-lr">✓${lr.passed} ✗${lr.failed} ·
+                  ${esc((lr.started_at||'').replace('T',' ').slice(0,16))}</span>`
+               : '<span class="u-muted">never</span>'}</td>
+          <td data-label=""><div class="bgrp">
+            <button class="btn btn-o btn-sm" onclick="toggleSchedule(${s.id},${s.enabled?0:1})"
+                    title="${s.enabled?'Stop running this on a timetable':'Resume this schedule'}"
+              >${s.enabled?'Disable':'Enable'}</button>
+            <button class="bico" title="Edit" onclick='openSchedModal(${jsArg(JSON.stringify(s))})'>${ico('edit')}</button>
+            <button class="bico" title="Delete" onclick="deleteSchedule(${s.id})">${ico('trash')}</button>
+          </div></td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`;
   } catch(e) {
     box.innerHTML = `<div class="picker-empty">Could not load schedules — ${esc(e.message)}</div>`;
   }
@@ -365,6 +382,10 @@ async function saveGitConfig() {
 }
 
 // ── Git-native test cases ──────────────────────────────
+// Which projects have been synced in this browser session, so the first-run
+// 'this will take a minute' notice is only shown when it is true.
+let _syncSeen = {};
+
 async function loadSyncConfig() {
   const el = document.getElementById('sy-status');
   if (!el) return;
@@ -378,10 +399,10 @@ async function loadSyncConfig() {
     el.innerHTML = `
       <span style="color:var(--c-muted)">
         ${k.synced || 0} of ${k.total || 0} test case(s) come from the repository${
-          k.missing ? ` · <b style="color:#b45309">${k.missing} no longer in the repo</b>` : ''}.
+          k.missing ? ` · <b style="color:var(--c-warn-text)">${k.missing} no longer in the repo</b>` : ''}.
         ${c.last_sync_at ? `Last synced ${esc(c.last_sync_at.replace('T',' '))}.` : 'Never synced.'}
       </span>
-      ${!c.has_git ? `<div class="fhint" style="color:#b45309">No git repository configured
+      ${!c.has_git ? `<div class="fhint" style="color:var(--c-warn-text)">No git repository configured
          for this project — sync reads the .robot files already in the suites folder.</div>` : ''}`;
   } catch(e) { el.innerHTML = `<span style="color:var(--c-muted)">${esc(e.message)}</span>`; }
 }
@@ -399,26 +420,45 @@ async function saveSyncConfig() {
 
 async function runTcSync(dry) {
   const el = document.getElementById('sy-status');
-  el.innerHTML = dry ? 'Reading the repository…' : 'Syncing…';
+  // The first sync parses every .robot file — a minute on a large repo. After
+  // that only changed files are re-read, so say which one this is likely to be
+  // rather than leaving a spinner with no explanation.
+  const first = !(_syncSeen && _syncSeen[_curProj.id]);
+  el.innerHTML = `<span class="u-muted">${dry ? 'Reading' : 'Syncing'} the repository…`
+    + (first ? ' The first pass reads every <code>.robot</code> file and can take a '
+             + 'minute on a large repository; later ones only re-read what changed.' : '')
+    + '</span>';
   try {
     const r = await api('POST', `/projects/${_curProj.id}/sync?dry_run=${dry ? 'true' : 'false'}`);
     const s = r.summary;
-    el.innerHTML = `<span style="color:${dry ? 'var(--c-muted)' : '#15803d'}">
+    _syncSeen = _syncSeen || {}; _syncSeen[_curProj.id] = true;
+    // A repository can hold far more tests than a hand-curated project does.
+    // Preview is the only place that gap is visible, so make it unmissable
+    // rather than a number in a sentence.
+    const existing = (r.counts_before != null) ? r.counts_before : _tcs.length;
+    const bigAdd = dry && s.added >= 100;
+    el.innerHTML = `<span style="color:${dry ? 'var(--c-muted)' : 'var(--c-ok-text)'}">
         ${dry ? '<b>Preview</b> — nothing was written.' : '<b>Synced.</b>'}
         Parsed <b>${s.parsed}</b> test(s) — added <b>${s.added}</b>,
         updated <b>${s.updated}</b>, unchanged <b>${s.unchanged}</b>,
         no longer in the repo <b>${s.missing}</b>.
       </span>
+      ${bigAdd ? `<div class="help-note warn" style="margin-top:8px">
+        <p>This would create <b>${s.added}</b> test cases${existing ? ` alongside the
+        ${existing} already in this project` : ''}. That is what the repository
+        contains — every test in a <code>Testcases</code> folder becomes a case.
+        Nothing you created by hand is touched, and nothing is deleted, but this
+        is a large change: confirm the number looks right before syncing.</p></div>` : ''}
       ${syncDetail('Added', r.added, t => `${t.tc_code} — ${t.name}`)}
       ${syncDetail('Updated', r.updated, t => `${t.tc_code} — ${t.name} (${t.fields.join(', ')})`)}
       ${syncDetail('Missing from the repo', r.missing, t => `${t.tc_code} — ${t.name}`)}
-      ${r.duplicates && r.duplicates.length ? `<div class="fhint" style="color:#b91c1c">
+      ${r.duplicates && r.duplicates.length ? `<div class="fhint" style="color:var(--c-err-text)">
         Duplicate <code>braceid:</code> tags in the repository — these tests were skipped:
         ${esc(r.duplicates.map(d => d.braceid + ' (' + d.tests.join(', ') + ')').join('; '))}</div>` : ''}
-      ${r.errors && r.errors.length ? `<div class="fhint" style="color:#b45309">
+      ${r.errors && r.errors.length ? `<div class="fhint" style="color:var(--c-warn-text)">
         ${r.errors.length} file(s) could not be parsed: ${esc(r.errors.slice(0,3).join('; '))}</div>` : ''}`;
     if (!dry) { loadSyncConfig(); if (_curTab === 'cases') loadTCs(); }
-  } catch(e) { el.innerHTML = `<span style="color:#b91c1c">${esc(e.message)}</span>`; }
+  } catch(e) { el.innerHTML = `<span style="color:var(--c-err-text)">${esc(e.message)}</span>`; }
 }
 
 // Long lists get truncated — a first sync of a big repo reports hundreds of
@@ -561,27 +601,58 @@ async function removeMember(uid) {
 }
 
 // ── Admin ──────────────────────────────────────────────
+// ── Administration ─────────────────────────────────────
+// Five stacked cards was a long scroll, and openAdmin() used to fire all five
+// loads at once — including the results-volume walk behind Housekeeping. Tabs
+// mean one request for the panel you are actually looking at.
+// Wrapped rather than referenced directly, for the same reason as
+// SETTINGS_PANES in settings.js: these all happen to live in this file today,
+// but a bare reference silently breaks the moment one moves.
+const ADMIN_TABS = {
+  users: () => loadUsers(),
+  ai:    () => loadAIConfig(),
+  email: () => loadSmtpConfig(),
+  house: () => loadHousekeeping(),
+  audit: () => loadAudit(true),
+};
+let _adminTab = null;
+
+function switchAdminTab(name, force) {
+  if (!ADMIN_TABS[name]) name = 'users';
+  _adminTab = name;
+  localStorage.setItem('brace_admin_tab', name);
+  Object.keys(ADMIN_TABS).forEach(k => {
+    document.getElementById('atab-'  + k).classList.toggle('active', k === name);
+    document.getElementById('apane-' + k).classList.toggle('active', k === name);
+  });
+  // Reload every time it is opened: users get added, audit rows accumulate, and
+  // a stale panel is worse than a second request.
+  try { ADMIN_TABS[name](); } catch (e) { /* a panel failing must not break the tabs */ }
+}
+
 function openAdmin() {
   showView('admin');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('admin-navitem').classList.add('active');
-  loadUsers(); loadAIConfig(); loadSmtpConfig(); loadHousekeeping(); loadAudit(true);
+  switchAdminTab(localStorage.getItem('brace_admin_tab') || 'users');
 }
 
 // ── Housekeeping ───────────────────────────────────────
 // Retention is env-driven, so this card reports rather than edits: an operator
 // who can change BRACE_RETENTION_DAYS is changing the Deployment, and a value
 // editable in two places would drift.
-async function loadHousekeeping() {
+async function loadHousekeeping(refresh) {
   const box = document.getElementById('hk-body');
   if (!box) return;
+  if (refresh) box.innerHTML = '<div class="u-hint">Measuring the results volume…</div>';
   try {
-    const h = await api('GET', '/admin/maintenance');
+    const h = await api('GET', '/admin/maintenance' + (refresh ? '?refresh=true' : ''));
     const c = h.config, d = h.disk, last = h.last;
     box.innerHTML = `
       <div class="hk-grid">
         <div class="hk-stat"><span class="hk-lbl">Database</span><b>${fmtBytes(d.db_bytes)}</b></div>
-        <div class="hk-stat"><span class="hk-lbl">Results on disk</span><b>${fmtBytes(d.results_bytes)}</b></div>
+        <div class="hk-stat"><span class="hk-lbl">Results on disk</span><b>${fmtBytes(d.results_bytes)}</b>
+          <span class="hk-age">${hkAge(d)}</span></div>
         <div class="hk-stat"><span class="hk-lbl">Retention</span><b>${
           c.enabled ? c.retention_days + ' days' : 'off — keep forever'}</b></div>
         <div class="hk-stat"><span class="hk-lbl">Always keep</span><b>${c.retention_keep_min} runs/project</b></div>
@@ -600,6 +671,20 @@ async function loadHousekeeping() {
   } catch(e) { box.innerHTML = `<div class="fhint">${esc(e.message)}</div>`; }
 }
 
+// Says how old the disk figure is, and offers a live re-measure. Measuring a
+// large volume takes seconds, so the card samples rather than blocking — but a
+// stale number presented as live would be worse than a slow one.
+function hkAge(d) {
+  const a = d.results_age_sec;
+  if (a == null) return '';
+  const when = a < 5 ? 'just now'
+             : a < 90 ? `${Math.round(a)}s ago`
+             : `${Math.round(a / 60)}m ago`;
+  return `measured ${when}`
+       + (d.results_measure_sec ? ` · took ${d.results_measure_sec}s` : '')
+       + ` · <a href="#" onclick="loadHousekeeping(true);return false">re-measure</a>`;
+}
+
 async function runHousekeeping(dry) {
   const el = document.getElementById('hk-status');
   if (!dry) {
@@ -612,7 +697,7 @@ async function runHousekeeping(dry) {
     const r = await api('POST', `/admin/maintenance/run?dry_run=${dry ? 'true' : 'false'}`);
     const runs = r.runs || {}, orph = r.orphans || {}, audit = r.audit || {}, db = r.db || {};
     const freed = (runs.freed_bytes || 0) + (orph.freed_bytes || 0);
-    el.innerHTML = `<span style="color:${dry ? 'var(--c-muted)' : '#15803d'}">
+    el.innerHTML = `<span style="color:${dry ? 'var(--c-muted)' : 'var(--c-ok-text)'}">
       ${dry ? '<b>Dry run</b> — nothing was deleted.' : '<b>Done.</b>'}
       Runs ${dry ? 'that would be' : ''} deleted: <b>${runs.runs || 0}</b>
       ${runs.enabled === false ? '(retention off)' : ''} ·
@@ -623,10 +708,10 @@ async function runHousekeeping(dry) {
       ${db.skipped_vacuum ? ` · compaction skipped (${esc(String(db.skipped_vacuum))})` : ''}
       </span>
       ${(runs.errors||[]).concat(orph.errors||[]).length
-        ? `<div class="fhint" style="color:#b45309">Some folders could not be removed: ${
+        ? `<div class="fhint" style="color:var(--c-warn-text)">Some folders could not be removed: ${
             esc(((runs.errors||[]).concat(orph.errors||[])).slice(0,3).join('; '))}</div>` : ''}`;
     if (!dry) loadHousekeeping();
-  } catch(e) { el.innerHTML = `<span style="color:#b91c1c">${esc(e.message)}</span>`; }
+  } catch(e) { el.innerHTML = `<span style="color:var(--c-err-text)">${esc(e.message)}</span>`; }
 }
 
 // ── Audit log ──────────────────────────────────────────
@@ -718,7 +803,7 @@ function auditDetail(raw) {
 }
 
 function aiStatus(html, kind) {
-  const c = kind === 'ok' ? '#15803d' : kind === 'err' ? '#b91c1c' : 'var(--c-muted)';
+  const c = kind === 'ok' ? 'var(--c-ok-text)' : kind === 'err' ? 'var(--c-err-text)' : 'var(--c-muted)';
   document.getElementById('ai-status').innerHTML = `<span style="color:${c}">${html}</span>`;
 }
 
@@ -734,9 +819,9 @@ async function loadAIConfig() {
       c.has_key ? `(saved, ending ${c.key_hint})` : '(not set)';
 
     if (!c.has_key)      aiStatus('No API key saved. In-app analysis is unavailable — users get the copy-prompt option.', 'idle');
-    else if (!c.enabled) aiStatus('⚠ Key is saved but <b>Enable in-app AI analysis</b> is off, so nothing uses it. Tick the box and save.', 'err');
+    else if (!c.enabled) aiStatus(ico('warn') + ' Key is saved but <b>Enable in-app AI analysis</b> is off, so nothing uses it. Tick the box and save.', 'err');
     else                 aiStatus('✓ Configured and enabled. Use <b>Test Connection</b> to verify the endpoint responds.'
-                                  + (c.verify_ssl === false ? ' <span style="color:#b45309">TLS verification is off.</span>' : ''), 'ok');
+                                  + (c.verify_ssl === false ? ' <span style="color:var(--c-warn-text)">TLS verification is off.</span>' : ''), 'ok');
   } catch(e) { /* non-admins simply don't see this section populated */ }
 }
 
@@ -846,7 +931,7 @@ async function loadSmtpConfig() {
     // Emails can only deep-link to a run if the pod knows its external URL.
     document.getElementById('smtp-url-warn').innerHTML = c.public_url
       ? `Emails link to <code>${esc(c.public_url)}</code>`
-      : '⚠ <b>BRACE_PUBLIC_URL is not set</b>, so emails cannot link back to the run. '
+      : ico('warn') + ' <b>BRACE_PUBLIC_URL is not set</b>, so emails cannot link back to the run. '
         + 'Set it in the Deployment to the route users actually browse to.';
   } catch(e) { /* non-admins never see this section */ }
 }
@@ -920,7 +1005,7 @@ async function loadNotifyConfig() {
     // looks identical to "nothing failed". Say so up front.
     document.getElementById('notify-smtp-warn').innerHTML = c.smtp_ready
       ? 'Email is configured server-wide. Choose what this project should send.'
-      : '⚠ <b>No SMTP server is configured yet</b>, so nothing will be sent. '
+      : ico('warn') + ' <b>No SMTP server is configured yet</b>, so nothing will be sent. '
         + 'A system admin sets it up under Administration → Email Notifications.';
   } catch(e) { /* project_admin only */ }
 }

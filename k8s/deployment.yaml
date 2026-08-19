@@ -129,6 +129,12 @@ spec:
             # polling, which still works.
             - name: BRACE_SSE_MAX_SUBS
               value: "20"
+            # How long a results-volume size measurement is reused. Measuring
+            # means walking the whole tree — seconds on a large volume — so
+            # /metrics and the Housekeeping card share one sample instead of
+            # each triggering a walk on every request.
+            - name: BRACE_DISK_CACHE_TTL
+              value: "300"
             # The container's own clock. Timestamps are written using local time
             # and the UI shows them as stored, so an unset TZ means the container
             # runs in UTC and every time in the UI reads 5h30m behind for an IST

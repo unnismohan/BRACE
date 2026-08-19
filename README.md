@@ -96,6 +96,7 @@ docker compose -f docker-compose.local.yml down && rm -rf local_data/config
 - [Operations](#operations)
 - [Test cases from git](#test-cases-from-git)
 - [Email notifications](#email-notifications)
+- [Interface](#interface)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -141,7 +142,7 @@ command shown, and `k8s/deployment.yaml` includes a `Route` alongside the Servic
 ### 1. Build and push the image
 
 ```bash
-VERSION=2.1.1
+VERSION=2.2.0
 REGISTRY=registry.example.com/brace
 
 docker build -f Dockerfile.optimized --build-arg APP_VERSION=$VERSION -t $REGISTRY/brace-runner-hardened:$VERSION .
@@ -204,9 +205,9 @@ kubectl logs deployment/brace-rf-controller | head -30
 A healthy start logs its effective configuration:
 
 ```
-BRACE v2 started — env=staging tag=2.1.1 version=2.1.1 max_concurrent_runs=3
+BRACE v2 started — env=staging tag=2.2.0 version=2.2.0 max_concurrent_runs=3
 max_concurrent_tests=3 run_parallel=3 test_timeout=1800s scheduler_tz=Asia/Kolkata
-container_tz=Asia/Kolkata local_time=2026-08-15 08:12:03
+container_tz=Asia/Kolkata local_time=2026-08-19 08:12:03 retention=90d (keep min 20/project)
 ```
 
 Check that line against what you intended — it is the fastest way to catch a config that did not
@@ -252,6 +253,7 @@ PLAIN TEXT` and continues. Grep for that after any secret change.
 | `BRACE_AUDIT_RETENTION_DAYS` | `365` | Audit rows are small; keep them far longer than run data. `0` = forever. |
 | `BRACE_MAINT_CRON` | `30 2 * * *` | When the nightly purge, orphan sweep and database compaction run. Read in `BRACE_SCHEDULER_TZ`. |
 | `BRACE_SSE_MAX_SUBS` | `20` | Concurrent live watchers per run. Past this a browser falls back to polling. |
+| `BRACE_DISK_CACHE_TTL` | `300` | Seconds a results-volume size measurement is reused. Measuring means walking the whole tree — ~7.5s at 384 MB — so `/metrics` and the Housekeeping card share one sample rather than each triggering a walk. |
 | `STATIC_DIR` | derived | Only needed when running outside the container. |
 
 ---
@@ -288,8 +290,8 @@ Runs beyond capacity sit at `queued` and start automatically. If the pod restart
 
 ```bash
 # 1. build and push a NEW tag
-docker build -f Dockerfile.optimized --build-arg APP_VERSION=2.1.1 -t <registry>/brace-runner-hardened:2.1.1 .
-docker push <registry>/brace-runner-hardened:2.1.1
+docker build -f Dockerfile.optimized --build-arg APP_VERSION=2.2.0 -t <registry>/brace-runner-hardened:2.2.0 .
+docker push <registry>/brace-runner-hardened:2.2.0
 
 # 2. update BOTH the image and IMAGE_TAG in k8s/deployment.yaml, then
 kubectl apply -f k8s/deployment.yaml
@@ -343,6 +345,7 @@ Metrics worth alerting on:
 | `brace_tests_total{outcome="timeout"}` | Rising = wedged browsers, or a timeout set too low. |
 | `brace_run_items_count` | Rows in the table that actually drives database growth. Flat-lining after a purge is how you confirm retention is working. |
 | `brace_retention_days` | `0` here means retention is off — worth an alert of its own if you intended it on. |
+| `brace_results_disk_age_seconds` | How stale the disk figure is. If it exceeds `BRACE_DISK_CACHE_TTL` by a wide margin the sampling itself is struggling. |
 
 ### Disk and retention
 
@@ -437,12 +440,23 @@ To keep a code across renames, pin it in the repository:
 ```robotframework
 *** Test Cases ***
 Verify Successful Login
-    [Tags]    smoke    braceid:VDRC_LOGIN_01
+    [Tags]    smoke    braceid:LOGIN_01
 ```
 
 `tc_code` is unique across the whole server, so if that code is already taken by another project
 the sync assigns a generated one and reports it — two projects can point at the same repository
 without colliding.
+
+### Sync performance
+
+Parsing is the expensive half. Measured on a real repository: **3,832 tests, 0 parse errors,
+49 s** on the first pass. Results are cached per file and re-parsed only when a file's mtime or
+size changes, so a sync following a git pull that touched a handful of files is near-instant
+(**157× faster** on an unchanged tree). The cache is process-local and rebuilds after a restart.
+
+Preview before the first real sync. A repository routinely holds far more tests than a
+hand-curated project does — 3,832 against 75 in the case above — and while nothing is deleted
+and hand-made cases are untouched, that is still a large change to walk into unprepared.
 
 In `git` mode a **Git Sync** from the Scripts tab reconciles the test cases in the same action, so
 pulling scripts and updating the case list never drift apart. An optional per-project cron
@@ -500,6 +514,45 @@ actual error, so a wrong App Password is distinguishable from a blocked port. Co
 | `Connection timed out` | Egress blocked, or the host does not resolve from inside the cluster. |
 | `The server rejected the From address` | Sender not allowlisted by the relay. |
 | `TLS handshake failed` | Self-signed internal relay — untick *Verify TLS certificate*. |
+
+---
+
+## Interface
+
+The frontend is plain CSS and classic scripts — no build step, no framework, nothing fetched
+at runtime (the air-gap constraint). What that buys structurally:
+
+- **Every colour, size and spacing value is a token** in `:root` at the top of
+  `controller/static/css/brace.css`. No component rule contains a raw colour. Re-theming for
+  another organisation is editing that one block.
+- **Dark mode is a token swap**, not a second stylesheet. Three states: an explicit choice
+  stamps `data-theme` on `<html>`; "system" stamps nothing and lets `prefers-color-scheme`
+  decide. Every status colour was re-tuned for the dark ground rather than inverted, and all
+  of them clear WCAG AA on both.
+- **Icons are one inline SVG sprite** drawn in `currentColor`, so they inherit text colour and
+  theme automatically. They replaced ~200 emoji, which rendered differently on every OS.
+- **Row density** (comfortable/compact) is one `--row-py` token behind a `body.compact` class.
+- **Theme and density are per-browser** (`localStorage`), never server state.
+
+Screens below 768px get a drawer for the project list, stacked cards instead of wide tables,
+full-screen dialogs and 38px touch targets.
+
+### Navigation
+
+Two screens grew past what one scrolling page carries well, and each got the pattern that fits:
+
+- **Administration** — five tabs (Users, AI Assistant, Email, Housekeeping, Audit Log). Only the
+  open tab loads, so arriving on Users no longer triggers the results-volume walk behind
+  Housekeeping. Opening it costs **zero** requests until you pick a panel.
+- **Project settings** — a vertical section rail (General, Git & Sync, Schedules, Notifications,
+  Members, Danger Zone). Not tabs: settings already sits inside the project tab bar, and a second
+  horizontal bar under it stacks two rows of tabs. Panels are sized to their content — forms
+  680px, item lists 840px, the members table 1100px — rather than stretched across the full
+  column. Below 1080px the rail becomes a row of chips.
+
+Both remember the panel you last used. Settings makes one exception and never re-opens on
+**Danger Zone**; returning someone to a panel of delete buttons because it is where they left off
+is not a convenience.
 
 ---
 
