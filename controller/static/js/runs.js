@@ -85,14 +85,24 @@ async function triggerRun() {
 // ── Runs ───────────────────────────────────────────────
 // Runs may queue when the server is at its concurrency limit — say so, rather
 // than leaving the user wondering why nothing is executing.
+// Three different things can be true, and they used to read the same. A run
+// that begins immediately should not be announced as waiting for a slot.
 function runStartMsg(r) {
-  const par = (r && r.parallel > 1) ? ` (${r.parallel} cases in parallel)` : '';
-  if (r && r.status === 'queued') {
-    return r.queued_ahead
-      ? `Run queued — ${r.queued_ahead} run(s) ahead of it. It starts automatically.`
-      : `Run queued${par} — starts as soon as an execution slot is free.`;
-  }
-  return 'Run started: ' + (r ? r.run_id : '');
+  if (!r) return 'Run started';
+  const n = r.total ? `${r.total} case${r.total === 1 ? '' : 's'}` : 'Run';
+  // "6 cases, 6 at a time" says the same thing twice; when the width covers the
+  // whole run they simply all go at once.
+  const par = r.parallel > 1
+    ? (r.parallel >= r.total ? ' in parallel' : `, ${r.parallel} at a time`)
+    : '';
+  if (r.starts_immediately) return `Running ${n}${par}…`;
+  if (r.queued_ahead)
+    return `Queued behind ${r.queued_ahead} run${r.queued_ahead === 1 ? '' : 's'} — `
+         + 'it starts on its own.';
+  const slots = r.slots_total || 0;
+  return slots === 1
+    ? 'Queued — the execution slot is busy. It starts as soon as it frees.'
+    : `Queued — all ${slots} execution slots are busy. It starts as soon as one frees.`;
 }
 
 async function loadRuns() {

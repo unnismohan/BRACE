@@ -142,7 +142,7 @@ command shown, and `k8s/deployment.yaml` includes a `Route` alongside the Servic
 ### 1. Build and push the image
 
 ```bash
-VERSION=2.2.0
+VERSION=2.2.1
 REGISTRY=registry.example.com/brace
 
 docker build -f Dockerfile.optimized --build-arg APP_VERSION=$VERSION -t $REGISTRY/brace-runner-hardened:$VERSION .
@@ -205,7 +205,7 @@ kubectl logs deployment/brace-rf-controller | head -30
 A healthy start logs its effective configuration:
 
 ```
-BRACE v2 started — env=staging tag=2.2.0 version=2.2.0 max_concurrent_runs=3
+BRACE v2 started — env=staging tag=2.2.1 version=2.2.1 max_concurrent_runs=3
 max_concurrent_tests=3 run_parallel=3 test_timeout=1800s scheduler_tz=Asia/Kolkata
 container_tz=Asia/Kolkata local_time=2026-08-19 08:12:03 retention=90d (keep min 20/project)
 ```
@@ -290,8 +290,8 @@ Runs beyond capacity sit at `queued` and start automatically. If the pod restart
 
 ```bash
 # 1. build and push a NEW tag
-docker build -f Dockerfile.optimized --build-arg APP_VERSION=2.2.0 -t <registry>/brace-runner-hardened:2.2.0 .
-docker push <registry>/brace-runner-hardened:2.2.0
+docker build -f Dockerfile.optimized --build-arg APP_VERSION=2.2.1 -t <registry>/brace-runner-hardened:2.2.1 .
+docker push <registry>/brace-runner-hardened:2.2.1
 
 # 2. update BOTH the image and IMAGE_TAG in k8s/deployment.yaml, then
 kubectl apply -f k8s/deployment.yaml

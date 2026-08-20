@@ -8,7 +8,7 @@ services:
       args:
         # Keeps /health honest locally too — without it the build falls back to
         # the Dockerfile's ARG default.
-        APP_VERSION: "2.2.0-local"
+        APP_VERSION: "2.2.1-local"
     image: brace-local:dev
     container_name: brace-local
     ports:

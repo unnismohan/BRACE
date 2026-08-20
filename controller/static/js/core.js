@@ -151,14 +151,18 @@ function timeAgo(iso) {
   if (d < 86400) return Math.round(d/3600)+'h ago';
   return Math.round(d/86400)+'d ago';
 }
-const TOAST_ICON = { s: 'check', e: 'warn', i: 'info' };
+const TOAST_ICON  = { s: 'check', e: 'warn', i: 'info' };
+const TOAST_CLASS = { s: 'toast-ok', e: 'toast-err', i: 'toast-info' };
 
 // `icon` overrides the per-type default. A confirmation of a setting should
 // show that setting's own icon — a generic sparkle next to "Compact rows" tells
 // the reader nothing about what just happened.
 function toast(msg, type='i', icon) {
   const el = document.createElement('div');
-  el.className = `toast ${type}` + (String(msg).length > 60 ? ' multiline' : '');
+  // Mapped, not interpolated: `toast ${type}` put class "i" on an info toast,
+  // which the icon rule .i then sized as a 16px glyph.
+  el.className = 'toast ' + (TOAST_CLASS[type] || TOAST_CLASS.i)
+               + (String(msg).length > 60 ? ' multiline' : '');
   // role=status announces it to a screen reader without stealing focus.
   el.setAttribute('role', type === 'e' ? 'alert' : 'status');
   const txt = document.createElement('span');

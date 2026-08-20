@@ -929,9 +929,12 @@ body.no-manage [data-cap="manage"] { display: none !important; }
    where it belongs, rather than floating in the vertical middle. */
 .toast.multiline{align-items:flex-start}
 .toast.multiline .i{margin-top:2px}
-.toast.s{border-left-color:var(--c-ok)}   .toast.s  .i{color:var(--c-ok-text)}
-.toast.e{border-left-color:var(--c-err)}  .toast.e  .i{color:var(--c-err-text)}
-.toast.i{border-left-color:var(--c-blue)} .toast.i  .i{color:var(--c-blue)}
+/* Named toast-ok/err/info, NOT .toast.s/.e/.i — an info toast carrying class
+   "i" also matched the icon rule .i{width:1.15em;height:1.15em}, so the box was
+   sized as a 16px icon and its text spilled out below the card. */
+.toast-ok{border-left-color:var(--c-ok)}    .toast-ok   .i{color:var(--c-ok-text)}
+.toast-err{border-left-color:var(--c-err)}  .toast-err  .i{color:var(--c-err-text)}
+.toast-info{border-left-color:var(--c-blue)}.toast-info .i{color:var(--c-blue)}
 @keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
 @media(prefers-reduced-motion:reduce){.toast{animation:none}}
 @media(max-width:768px){#toasts{left:12px;right:12px;bottom:12px;max-width:none}}

@@ -55,7 +55,7 @@ spec:
 
       containers:
         - name: rf-controller
-          image: registry.example.com/brace/brace-runner-hardened:2.2.0
+          image: registry.example.com/brace/brace-runner-hardened:2.2.1
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -73,7 +73,7 @@ spec:
             # Surfaced by /health and the startup log — keep in step with the
             # image tag above so you can confirm which build is actually live.
             - name: IMAGE_TAG
-              value: "2.2.0"
+              value: "2.2.1"
             - name: CONFIG_DIR
               value: /opt/rf/config
             # ── Execution capacity ──────────────────────────────────────

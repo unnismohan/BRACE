@@ -88,7 +88,7 @@ RESULTS_DIR = Path(os.getenv("RESULTS_DIR", "/opt/rf/results"))
 # BRACE_VERSION from its APP_VERSION build arg, which also stamps the image
 # label, so /health and the image can never disagree. The literal below is only
 # the fallback for running outside the container.
-APP_VERSION = os.getenv("BRACE_VERSION", "").strip() or "2.2.0"
+APP_VERSION = os.getenv("BRACE_VERSION", "").strip() or "2.2.1"
 
 BSS_ENV     = os.getenv("BSS_ENV",    "staging")
 IMAGE_TAG   = os.getenv("IMAGE_TAG",  "unknown")
@@ -2062,9 +2062,17 @@ def _start_run(project_id: int, tcs: list, run_name: str, username: str,
     asyncio.create_task(_execute_run(run_id, project_id, items, extra_args, width))
 
     queued_ahead = max(0, sum(1 for r in _active_runs.values() if r["status"] == "queued") - 1)
+    # The run is always created as 'queued' — _execute_run has not been given the
+    # loop yet — but that is a bookkeeping state, not a wait. Reporting it as
+    # "starts as soon as a slot is free" made every run look delayed when the
+    # normal case is that it begins within milliseconds. Predict it here: with a
+    # free slot and nothing ahead of it, this run acquires the semaphore at once.
+    running_now = sum(1 for r in _active_runs.values() if r["status"] == "running")
+    starts_now  = queued_ahead == 0 and running_now < MAX_CONCURRENT_RUNS
     return {"run_id": run_id, "run_name": run_name, "total": len(tcs),
             "status": "queued", "queued_ahead": queued_ahead, "rerun_of": rerun_of,
-            "parallel": width}
+            "parallel": width, "starts_immediately": starts_now,
+            "slots_busy": max(0, running_now), "slots_total": MAX_CONCURRENT_RUNS}
 
 
 class RerunReq(BaseModel):
