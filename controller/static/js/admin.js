@@ -854,21 +854,46 @@ async function testAIConfig() {
   }
 }
 
+// The list is held here so typing in the filter re-renders from memory instead
+// of re-fetching /users on every keystroke.
+let _users = [];
+
 async function loadUsers() {
   try {
-    const users=await api('GET','/users');
-    const tbody=document.getElementById('users-tbody'); tbody.innerHTML='';
-    users.forEach(u => {
-      const tr=document.createElement('tr');
-      tr.innerHTML=`
-        <td><strong>${esc(u.username)}</strong></td>
-        <td>${esc(u.full_name||'—')}</td>
-        <td>${esc(u.email||'—')}</td>
-        <td><span class="sbadge ${u.system_role}">${u.system_role}</span></td>
-        <td><button class="btn btn-sm btn-d" onclick="deleteUser(${u.id},${jsArg(u.username)})">Delete</button></td>`;
-      tbody.appendChild(tr);
-    });
+    _users = await api('GET','/users');
+    renderUsers();
   } catch(e) { toast(e.message,'e'); }
+}
+
+function renderUsers() {
+  const tbody=document.getElementById('users-tbody');
+  if (!tbody) return;
+  const q=(document.getElementById('users-search')?.value||'').trim().toLowerCase();
+  const rows = q
+    ? _users.filter(u => [u.username, u.full_name, u.email, u.system_role]
+        .some(v => (v||'').toLowerCase().includes(q)))
+    : _users;
+
+  const count=document.getElementById('users-count');
+  if (count) count.textContent = q ? `${rows.length} of ${_users.length}` : String(_users.length);
+
+  tbody.innerHTML='';
+  if (!rows.length) {
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td colspan="5" class="u-hint">${q ? 'No user matches “'+esc(q)+'”.' : 'No users yet.'}</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+  rows.forEach(u => {
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td><strong>${esc(u.username)}</strong></td>
+      <td>${esc(u.full_name||'—')}</td>
+      <td>${esc(u.email||'—')}</td>
+      <td><span class="sbadge ${u.system_role}">${u.system_role}</span></td>
+      <td><button class="btn btn-sm btn-d" onclick="deleteUser(${u.id},${jsArg(u.username)})">Delete</button></td>`;
+    tbody.appendChild(tr);
+  });
 }
 
 async function createUser() {

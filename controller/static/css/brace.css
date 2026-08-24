@@ -415,6 +415,12 @@ mark{background:var(--c-mark-bg);color:inherit;border-radius:2px;padding:0 1px}
 .settings-grid .tbl-wrap,.settings-layout .tbl-wrap{margin-top:0}
 .settings-grid .sec-count,.settings-layout .sec-count{font-size:var(--fs-xs);
   font-weight:600;color:var(--c-muted)}
+/* The Administration panes are plain .asection cards, outside .settings-layout,
+   so the heading rules above do not reach them. Same treatment, same look. */
+.tab-pane .sec-hd{display:flex;align-items:center;justify-content:space-between;
+  gap:12px;flex-wrap:wrap}
+.tab-pane .sec-hd h3{margin:0}
+.tab-pane .sec-count{font-size:var(--fs-xs);font-weight:600;color:var(--c-muted)}
 /* Members is the only card that grows without bound — give it the full width,
    below the fixed-size cards, and cap its height so the page never runs away. */
 .settings-grid > .members-card{grid-column:1/-1}

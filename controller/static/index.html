@@ -777,10 +777,15 @@
 
       <div class="tab-pane" id="apane-users">
       <div class="asection">
-        <h3>Users</h3>
-        <div class="bgrp u-mb-3">
-          <button class="btn btn-p btn-sm" onclick="showModal('modal-newuser')"><svg class="i" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg> New User</button>
-          <button class="btn btn-o btn-sm" onclick="showModal('modal-bulkusers')"><svg class="i" aria-hidden="true" focusable="false"><use href="#i-upload"/></svg> Bulk CSV</button>
+        <div class="sec-hd u-mb-3">
+          <h3>Users <span class="sec-count" id="users-count"></span></h3>
+          <div class="bgrp">
+            <span class="fb-search" style="flex:0 1 240px">
+              <input id="users-search" type="text" placeholder="Search username, name, email or role…" oninput="renderUsers()">
+            </span>
+            <button class="btn btn-p btn-sm" onclick="showModal('modal-newuser')"><svg class="i" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg> New User</button>
+            <button class="btn btn-o btn-sm" onclick="showModal('modal-bulkusers')"><svg class="i" aria-hidden="true" focusable="false"><use href="#i-upload"/></svg> Bulk CSV</button>
+          </div>
         </div>
         <div class="tbl-wrap">
           <table><thead><tr><th>Username</th><th>Full Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody id="users-tbody"></tbody></table>
