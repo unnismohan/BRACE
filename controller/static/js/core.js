@@ -259,6 +259,10 @@ function afterLogin(r) {
 }
 
 function logout() {
+  // Fire and forget: it clears the results cookie server-side. Signing out
+  // must not depend on the request succeeding, so the local state is dropped
+  // either way.
+  if (_token) api('POST', '/auth/logout').catch(() => {});
   _token = ''; _user = null; _curProj = null;
   localStorage.removeItem('brace_token'); localStorage.removeItem('brace_user');
   clearInterval(_runsTimer);

@@ -907,6 +907,47 @@ body.no-manage [data-cap="manage"] { display: none !important; }
 .failbox .fb-shot{display:block;margin-top:8px;max-width:340px;width:100%;height:auto;
                   border:1px solid var(--c-err-border);border-radius:5px;cursor:zoom-in}
 
+/* ── Locator repair (run detail) ── */
+/* Sits inside .failbox but reads as evidence rather than as more error text,
+   so it drops the error wash and takes the card background. */
+.loc-box{margin-top:10px;background:var(--c-card);border:1px solid var(--c-border);
+         border-radius:var(--radius-sm);padding:10px 12px}
+.loc-hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;
+        font-size:var(--fs-sm);color:var(--c-text)}
+.loc-hd .btn{margin-left:auto}
+.loc-code{font-family:var(--font-mono,ui-monospace,Consolas,monospace);font-size:var(--fs-xs);
+          background:var(--c-surface-2);border:1px solid var(--c-border);
+          border-radius:4px;padding:1px 6px;word-break:break-all}
+.loc-failed{color:var(--c-err-text);border-color:var(--c-err-border)}
+.loc-prop{border-left:3px solid var(--c-ok);background:var(--c-ok-wash);
+          border-radius:0 var(--radius-sm) var(--radius-sm) 0;padding:8px 10px;margin-bottom:8px}
+.loc-prop-hd{display:flex;align-items:center;gap:8px;font-weight:600;
+             color:var(--c-ok-text);font-size:var(--fs-sm);margin-bottom:5px}
+.loc-conf{font-size:var(--fs-2xs);font-weight:700;color:var(--c-muted)}
+.loc-tbl{width:100%;border-collapse:collapse;font-size:var(--fs-xs)}
+.loc-tbl th{text-align:left;font-weight:600;color:var(--c-muted);
+            border-bottom:1px solid var(--c-border);padding:4px 6px}
+.loc-tbl td{padding:5px 6px;border-bottom:1px solid var(--c-border);vertical-align:top}
+.loc-tbl tr:last-child td{border-bottom:none}
+.loc-tbl .ta-r,.loc-box .ta-r{text-align:right;font-variant-numeric:tabular-nums}
+
+/* ── Captured page viewer ── */
+.cap-meta{display:flex;flex-wrap:wrap;gap:6px 22px;padding:0 0 10px;
+          font-size:var(--fs-sm);color:var(--c-text)}
+.cap-meta > div{display:flex;align-items:baseline;gap:6px;max-width:100%}
+.cap-meta span{color:var(--c-muted);font-size:var(--fs-xs);text-transform:uppercase;
+               letter-spacing:.04em;font-weight:600}
+.cap-meta code{font-family:var(--font-mono,ui-monospace,Consolas,monospace);
+               font-size:var(--fs-xs);word-break:break-all}
+.cap-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.cap-src{flex:1;min-height:0;overflow:auto;margin:0;
+         background:var(--c-surface-2);border:1px solid var(--c-border);
+         border-radius:var(--radius-sm);padding:12px;
+         font-family:var(--font-mono,ui-monospace,Consolas,monospace);
+         font-size:var(--fs-xs);line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.cap-src mark{background:var(--c-accent-bg);color:var(--c-accent-text);
+              border-radius:3px;padding:0 2px}
+
 /* ── Tags ── */
 .tagchip{display:inline-block;padding:1px 8px;margin:0 3px 3px 0;border-radius:9px;
          background:var(--c-accent-bg);color:var(--c-accent-text);font-size:var(--fs-2xs);font-weight:600;white-space:nowrap}

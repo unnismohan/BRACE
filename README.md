@@ -36,6 +36,9 @@ message bus to operate.
 - **Failure summaries inline** — the failing keyword, its message and the
   screenshot, extracted from `output.xml`, without opening `log.html`
 - **Re-run only what failed** — 3 cases instead of 44
+- **Locator repair** — when an element is not found, BRACE captures the page as
+  it was and works out which element the locator probably meant. String
+  comparison, not a model: it works with no API key and no network
 - **Scheduled runs** on cron, with a live preview of when they fire
 - **Reports** — pass-rate trends, flaky detection, per-test-case history, and a
   coverage view answering "how much of our suite has ever actually run?"
@@ -95,6 +98,7 @@ docker compose -f docker-compose.local.yml down && rm -rf local_data/config
 - [Upgrading](#upgrading)
 - [Operations](#operations)
 - [Test cases from git](#test-cases-from-git)
+- [Page capture and locator repair](#page-capture-and-locator-repair)
 - [Email notifications](#email-notifications)
 - [Interface](#interface)
 - [Security](#security)
@@ -346,6 +350,8 @@ Metrics worth alerting on:
 | `brace_run_items_count` | Rows in the table that actually drives database growth. Flat-lining after a purge is how you confirm retention is working. |
 | `brace_retention_days` | `0` here means retention is off — worth an alert of its own if you intended it on. |
 | `brace_results_disk_age_seconds` | How stale the disk figure is. If it exceeds `BRACE_DISK_CACHE_TTL` by a wide margin the sampling itself is struggling. |
+| `brace_dom_captures_total` | Pages captured at locator failure. The largest artefact [page capture](#page-capture-and-locator-repair) writes — track it with the disk gauge. |
+| `brace_locator_proposals_total` | Locator replacements proposed. A ratio far below captures means the shortlist is rarely confident — usually pages that never finish loading. |
 
 ### Disk and retention
 
@@ -464,6 +470,78 @@ pulling scripts and updating the case list never drift apart. An optional per-pr
 
 ---
 
+## Page capture and locator repair
+
+The most common way a UI test breaks has nothing to do with the application under test: someone
+renames a button's `id` and every test that clicks it goes red. BRACE can catch that on its own.
+
+**Off by default, per project.** Settings → General → Diagnostics. It stores the markup of a real
+application mid-test, so switching it on has to be somebody's decision — see the warning below.
+
+### How it works
+
+1. **Capture.** BRACE injects `--listener controller/rf_listener/brace_capture.py` into every
+   robot command. Nothing in your suites changes. When a keyword fails with an
+   element-not-found style message, the listener reads `page_source` while the browser is
+   *still alive* — Robot tears it down moments later and the evidence is gone — and writes it to
+   `<item_dir>/dom/`. At most 3 per test case; never on an assertion failure in an API test.
+2. **Prune.** Scripts, styles, inline SVG, comments, `on*` handlers and base64 blobs are stripped
+   in-process before anything reaches disk. Typically 5–15% of the original; capped at 512 KB.
+3. **Shortlist.** `controller/locator_repair.py` parses the failed locator, pulls the identifying
+   name out of an XPath or CSS expression, and ranks every element on the captured page against
+   it. A replacement selector is suggested in preference order — test hook, `id`, `name`,
+   `aria-label`, link text, stable class — and **never an absolute XPath**.
+4. **Propose.** When exactly one candidate is convincing and nothing else is close, it is shown as
+   a likely replacement. Otherwise the ranked candidates are shown and no proposal is made.
+
+Matching is `difflib` and string normalisation — `submitBtn`, `submit-btn` and `SUBMIT_BTN` are
+recognised as one name written three ways. **No model, no network, no API key**: it works on an
+air-gapped install exactly as it does anywhere else.
+
+Two things stop it producing confident nonsense. Noise words are **learned from the page**, not
+from a fixed list: a token appearing in ≥12% of the page's ids identifies nothing, so on a pricing
+screen `ProductPrice143` no longer half-matches `minPrice` on the word *price*, while on a
+checkout page `submit` stays the most identifying token there is. And a similarity resting on
+letter coincidence with no shared word — `combinationType` against `automationPrice`, both
+containing `omation` — is discounted the same way. When the element is genuinely absent, which is
+what a page that never finished loading looks like, the answer is an empty table saying so.
+
+### Nothing is ever applied
+
+BRACE proposes; a person decides. Auto-healing a locator produces a suite that passes without
+testing anything, and sometimes the element really is missing because the page is broken — which
+is precisely the failure worth keeping. `status` on a proposal can be set to `rejected` or
+reopened, never to `applied`.
+
+### API
+
+| Endpoint | Role | Use |
+|---|---|---|
+| `GET /api/projects/{id}/locator-proposals` | viewer | One row per distinct broken locator, with `occurrences`. Twelve cases broken by one renamed button are one entry. |
+| `POST /api/projects/{id}/locator-proposals/{pid}/recompute` | tester | Re-runs the shortlist against the stored capture — useful after an upgrade changes the scoring, without re-running the test. |
+| `POST /api/projects/{id}/locator-proposals/{pid}/decide` | tester | `{"status": "rejected"}` or `{"status": "new"}`. |
+
+A rejected proposal is never overwritten by the next occurrence; only the count and timestamps
+move.
+
+### Operational notes
+
+- Captures live inside the run directory, so **the retention purge deletes them with their run**.
+  Proposals left stranded by that purge are cleared by the same nightly job.
+- `brace_dom_captures_total` and `brace_locator_proposals_total` are exported for Prometheus.
+  Captures are the largest artefact this feature writes — watch them alongside
+  `brace_results_disk_bytes`.
+- The capture is shown in the UI as **searchable source, not a rendered page**. Its styles were
+  stripped and its images point at the application's own host, so a browser asked to render it
+  draws unstyled markup and broken icons. The screenshot beside it is the visual record.
+
+> **The captured markup contains whatever was on screen, which on a real system means real
+> customer data.** It is off until enabled, stripped of scripts and styles, stored only on the
+> results volume, and deleted with its run. Treat it with the same care as a production
+> screenshot — and note that nothing sends it anywhere: the matching runs in-process.
+
+---
+
 ## Email notifications
 
 One SMTP account server-wide (Administration → Email Notifications); each project then chooses
@@ -579,12 +657,21 @@ Enforced in the deployment:
   the next boot rather than discovered later.
 - Git tokens, the AI API key and the SMTP password are encrypted at rest and never returned to the browser. Git
   credentials are masked in sync logs.
+- Report and log files are served against a JWT. The first request carries it as a query
+  parameter — an `<iframe>` cannot set a header — and is answered with a `brace_results` cookie so
+  that Robot's own relative links inside the report keep working. That cookie is `HttpOnly`,
+  `SameSite=strict`, scoped to `/results`, expires with the token that created it, and is cleared
+  by `POST /api/auth/logout` when a user signs out.
 
 Scan-related config lives in `.trivyignore` and `.grype.yaml`.
 
 > **The AI Debug Assistant sends test source and logs to whichever endpoint is configured.** On an
 > air-gapped deployment leave in-app analysis disabled — users still get the **Copy Prompt**
 > option, which produces a self-contained prompt to paste into an AI tool on their own machine.
+
+> **[Page capture](#page-capture-and-locator-repair) stores the markup of your application
+> mid-test, including any customer data on screen.** It is off unless a project admin enables it,
+> and nothing is sent anywhere — the matching is in-process string comparison.
 
 ---
 
@@ -636,6 +723,19 @@ Each modifier must be a **separate** argument — `'+5 hours 30 minutes'` as one
 and SQLite silently writes NULL over every timestamp. Adjust the offset for your zone, and run it
 once only: it is not idempotent.
 
+**The failure box shows no "Page at failure" panel**
+Capture is off for that project (Settings → General → Diagnostics), or it was off when the run
+executed — the setting applies to runs started after it is saved. It also stays absent when the
+failure was not an element-not-found: an assertion mismatch on an API test has no page worth
+storing.
+
+**"Page at failure" shows no candidates**
+That is usually the correct answer. It means no element on the captured page resembles the
+locator, which is what a page that never finished loading looks like — check the screenshot and
+the captured markup. It also happens when the failing keyword is a wrapper that fails with a
+message of its own: BRACE recovers the locator from Robot's failure text where it can, but a
+message that never names one leaves nothing to match against.
+
 **Everything failed at once after a restart**
 Expected. In-flight runs are marked `cancelled` at startup rather than left stranded. Re-run them.
 
@@ -655,6 +755,9 @@ controller/              FastAPI backend + SPA
   mailer.py              SMTP transport, provider presets, email templates
   maintenance.py         Retention purge, orphan sweep, ANALYZE/VACUUM
   git_sync.py            Parses .robot files into test cases (git mode)
+  locator_repair.py      Ranks page elements against a locator that failed
+  rf_listener/
+    brace_capture.py     Robot listener — captures the page at locator failure
   static/                index.html + css/ + js/ (no build step)
 k8s/
   deployment.yaml        Deployment + Service + Route

@@ -251,6 +251,31 @@ CREATE TABLE IF NOT EXISTS audit_log (
     target     TEXT,        -- run_id / tc_code / schedule id / affected username
     detail     TEXT         -- small JSON blob; NEVER secrets
 );
+-- One row per distinct broken locator per project, not per failed test. A
+-- renamed button breaks twelve cases and is one problem; the unique index
+-- below is what collapses them.
+CREATE TABLE IF NOT EXISTS locator_proposals (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    signature      TEXT    NOT NULL,
+    failed_locator TEXT    NOT NULL,
+    suite_path     TEXT,
+    tc_code        TEXT,
+    candidates     TEXT,        -- JSON: the deterministic shortlist
+    proposed       TEXT,        -- JSON: {locator, confidence, rationale, source}
+    status         TEXT DEFAULT 'new',   -- new | rejected | applied
+    occurrences    INTEGER DEFAULT 1,
+    first_seen     TEXT DEFAULT (datetime('now')),
+    last_seen      TEXT DEFAULT (datetime('now')),
+    last_run_id    TEXT,
+    last_item_id   INTEGER,
+    decided_by     TEXT,
+    decided_at     TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_locprop_sig
+    ON locator_proposals(project_id, signature);
+CREATE INDEX IF NOT EXISTS idx_locprop_project ON locator_proposals(project_id);
+
 CREATE INDEX IF NOT EXISTS idx_audit_ts     ON audit_log(ts);
 CREATE INDEX IF NOT EXISTS idx_audit_user   ON audit_log(username);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
@@ -324,6 +349,16 @@ def init_db():
                      ("source_test",  "TEXT"),
                      ("sync_status",  "TEXT")]:
         _add_column(c, "test_cases", col, typ)
+    # Failure-time page capture. Off by default and per project: the markup of
+    # an application mid-test contains real customer data, so storing it has to
+    # be somebody's deliberate decision, never a side effect of upgrading.
+    _add_column(c, "projects", "dom_capture_enabled", "INTEGER DEFAULT 0")
+    # Where the capture landed (relative to the item directory) and the locator
+    # that failed, extracted at run time so the repair view needs no re-parse.
+    # locator_sig is stored rather than recomputed on read: the signature is
+    # derived from the test case's suite_path, which the item does not carry.
+    for col in ("dom_capture", "failed_locator", "locator_sig"):
+        _add_column(c, "test_run_items", col, "TEXT")
     # Retention purges by finished_at, and the run list sorts by started_at.
     c.execute("CREATE INDEX IF NOT EXISTS idx_runs_finished ON test_runs(finished_at)")
     # Per-test-case history filters on tc_code across every run; this table grows

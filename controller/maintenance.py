@@ -274,6 +274,30 @@ def purge_old_audit(dry_run: bool = False) -> dict:
     return out
 
 
+def purge_orphan_proposals(dry_run: bool = False) -> dict:
+    """Drop locator proposals whose captured page has been purged with its run.
+
+    A proposal without its capture cannot be recomputed or reviewed, so it is
+    dead weight — and unlike run rows nothing else deletes it, because it hangs
+    off the project rather than off the run.
+    """
+    out = {"rows": 0}
+    conn = get_db()
+    sql = ("FROM locator_proposals WHERE last_item_id IS NOT NULL"
+           " AND last_item_id NOT IN (SELECT id FROM test_run_items)")
+    try:
+        if dry_run:
+            out["rows"] = conn.execute("SELECT COUNT(*) " + sql).fetchone()[0]
+        else:
+            out["rows"] = max(0, conn.execute("DELETE " + sql).rowcount)
+            conn.commit()
+    except Exception as exc:                          # noqa: BLE001 — table may predate this build
+        log.debug("Locator proposal purge skipped: %s", exc)
+    finally:
+        conn.close()
+    return out
+
+
 def optimise_db(allow_vacuum: bool = True) -> dict:
     """ANALYZE always; VACUUM only when there is real space to reclaim.
 
@@ -324,8 +348,11 @@ def run_maintenance(skip_run_ids=None, allow_vacuum: bool = True,
         out["runs"]   = purge_old_runs(skip_run_ids, dry_run=dry_run)
         out["orphans"] = sweep_orphan_dirs(skip_run_ids, dry_run=dry_run)
         out["audit"]  = purge_old_audit(dry_run=dry_run)
+        # After the run purge, not before: it is what strands them.
+        out["locators"] = purge_orphan_proposals(dry_run=dry_run)
         # Only worth compacting if something was actually removed.
-        touched = (out["runs"]["runs"] or out["orphans"]["dirs"] or out["audit"]["rows"])
+        touched = (out["runs"]["runs"] or out["orphans"]["dirs"]
+                   or out["audit"]["rows"] or out["locators"]["rows"])
         out["db"] = (optimise_db(allow_vacuum) if (touched and not dry_run)
                      else {"skipped": "nothing was deleted"})
     except Exception as exc:                          # noqa: BLE001 — a scheduled job must not die

@@ -368,6 +368,19 @@ async function saveProjSettings() {
   } catch(e) { toast(e.message,'e'); }
 }
 
+// Separate from saveProjSettings: this one changes what BRACE stores about the
+// application under test, and burying it in a Save that also renames the
+// project would make it easy to switch on without meaning to.
+async function saveDiagSettings() {
+  const on = document.getElementById('s-domcap').checked;
+  try {
+    await api('PUT', `/projects/${_curProj.id}`, { dom_capture_enabled: on });
+    _curProj.dom_capture_enabled = on ? 1 : 0;
+    toast(on ? 'Page capture on — it applies to runs started from now'
+             : 'Page capture off', 's');
+  } catch(e) { toast(e.message,'e'); }
+}
+
 async function saveGitConfig() {
   const token=document.getElementById('s-gittoken').value;
   try {

@@ -211,7 +211,10 @@ function tcToggle(id, on) { on ? _tcPicked.add(id) : _tcPicked.delete(id); onChk
 function onChkChange() {
   const btn = document.getElementById('btn-runsel');
   btn.style.display = _tcPicked.size ? 'inline-flex' : 'none';
-  btn.textContent = `${ico('run')} Run Selected (${_tcPicked.size})`;
+  // innerHTML, not textContent: ico() returns an <svg><use> element, and
+  // assigning that to textContent prints the markup as literal text. The count
+  // is a Set size, so there is nothing user-supplied being injected here.
+  btn.innerHTML = `${ico('run')} Run Selected (${_tcPicked.size})`;
   // header checkbox reflects only what is currently visible
   const vis = [...document.querySelectorAll('.tc-chk')];
   const all = document.getElementById('chk-all');

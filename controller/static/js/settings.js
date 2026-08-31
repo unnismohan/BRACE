@@ -56,6 +56,8 @@ function loadSettings() {
   const p = _curProj;
   document.getElementById('s-name').value = p.name;
   document.getElementById('s-desc').value = p.description || '';
+  const dc = document.getElementById('s-domcap');
+  if (dc) dc.checked = !!p.dom_capture_enabled;
   switchSettings(localStorage.getItem('brace_settings_pane') || 'general');
 }
 
@@ -317,6 +319,10 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   <p>Each failed row shows the failing keyword on the row itself. Click <b>▸</b> to expand it for
   the full reason — the library the keyword came from, Robot's own message, and the screenshot
   taken at that moment if the test captured one. Click the screenshot for the full-size image.</p>
+  <p>The screenshot shown is the last one captured before the failure, whether your suite wrote it
+  to a file or embedded it with <code>Capture Page Screenshot &nbsp;EMBED</code>. Anything captured
+  afterwards by a teardown is skipped — a teardown that navigates home would otherwise leave the
+  failure box showing a dashboard while the log shows the page that actually broke.</p>
   <p>Expanded rows stay open while the run is still executing, so you can read a failure without
   the auto-refresh closing it.</p>
   <p>That is usually enough to triage without opening anything else. <b>Report</b> is the Robot
@@ -448,6 +454,62 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
   network, use <b>Copy Prompt</b> instead for anything sensitive.</p></div>
   <div class="help-note"><p>Treat the output as a knowledgeable suggestion, not a verdict.
   It sees the failure and the source, but not your application's behaviour. Verify before acting.</p></div>`},
+
+{ id:'locator', title:'Page Capture & Locator Repair', body:`
+  <p>The most common way a UI test breaks has nothing to do with your application: a
+  developer renames a button's <code>id</code> and every test that clicks it goes red.
+  BRACE can catch that automatically.</p>
+  <p>When <b>page capture</b> is on, a test that cannot find an element makes BRACE store
+  the page markup exactly as it was at that instant — before Robot closes the browser and
+  the evidence is gone. It then compares the locator that failed against every element on
+  that page and lists the ones it most likely meant.</p>
+  <h4>What you see</h4>
+  <p>Expand a failed case in run details. Under the screenshot there is a
+  <b>Page at failure</b> panel with:</p>
+  <ul>
+    <li><b>View page markup</b> — the page's HTML as it was, searchable, opening on the
+        element BRACE thinks you want. It is source rather than a picture of the page:
+        the capture has its styles stripped and its images point at your application's
+        own server, so rendering it would show something broken and tell you nothing.
+        The screenshot above it is the visual record.</li>
+    <li><b>Likely replacement</b> — shown only when one element is a convincing match.</li>
+    <li>A ranked table of candidates, each with a suggested locator and why it scored.</li>
+  </ul>
+  <p>Matching is plain string comparison — <code>submitBtn</code>, <code>submit-btn</code>
+  and <code>SUBMIT_BTN</code> are recognised as the same name written three ways. No model
+  is involved and nothing leaves the server, so this works on an air-gapped install.</p>
+  <p>Suggested locators prefer whatever is most durable on that element — a test hook such as
+  <code>data-testid</code>, then <code>id</code>, then <code>name</code>, then a label or link
+  text. BRACE will never hand you an absolute XPath: swapping one brittle locator for a more
+  brittle one only moves the problem to whoever hits it next.</p>
+  <div class="help-note"><p><b>Nothing is ever changed for you.</b> BRACE proposes a
+  locator; you decide. A test that silently rebinds itself to the nearest similar element
+  passes without testing anything — and sometimes the element really is missing because
+  the page is broken, which is precisely the failure you want to keep.</p></div>
+
+  <h4>When it says nothing matches</h4>
+  <p>An empty table is a real answer, not a failure to try. It means nothing on the captured
+  page resembles what you were looking for — and the usual reason is that the page never
+  reached the state the test expected. A grid still showing <i>Loading, please wait…</i> is the
+  classic case: the element was genuinely not there, and the screenshot will show it.</p>
+  <p>BRACE deliberately declines to fill the table with weak matches. On a screen where every
+  field is named something-Price, the word <i>Price</i> identifies nothing, and a list of
+  40%-confident suggestions built on it would be worse than an empty one. It works out which
+  words are meaningless from the page in front of it, so the same word can be noise on one
+  screen and the strongest clue on another.</p>
+  <p>You may also see no candidates when the keyword that failed is one of your own wrappers
+  that fails with its own message. BRACE reads the locator out of Robot's failure text where
+  it can, but a message that never mentions one leaves nothing to search for.</p>
+
+  <h4>Turning it on</h4>
+  <p><span class="help-role pa">Project Admin</span> — <b>Settings → General → Diagnostics</b>.
+  It applies to runs started after you save. Nothing in your test suites changes.</p>
+  <div class="help-note warn"><p>The captured markup contains whatever was on screen,
+  which on a real system means real customer data. It stays on the results volume and is
+  deleted with its run by the retention purge, but treat it with the same care as a
+  production screenshot. That is why it is off until someone switches it on.</p></div>
+  <p>Captures happen only for element-not-found style failures, at most three per test
+  case, and an assertion failure on an API test never triggers one.</p>`},
 
 { id:'team', title:'Team Activity', body:`
   <p><span class="help-role pa">Project Admin</span> only. Execution activity per person

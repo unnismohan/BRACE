@@ -628,6 +628,27 @@
               <button data-cap="manage" class="btn btn-p btn-sm" onclick="saveProjSettings()">Save</button>
             </div>
           </div>
+
+          <div class="asection">
+            <h3>Diagnostics</h3>
+            <div class="fr">
+              <label class="u-check">
+                <input type="checkbox" id="s-domcap" class="w-auto"> Capture the page when a locator fails
+              </label>
+            </div>
+            <p class="sec-note">
+              When a test cannot find an element, BRACE stores the page markup as it was
+              at that moment and lists the elements the locator most likely meant. This
+              works offline — it compares names, it does not call a model.
+              <strong>The stored markup contains whatever was on screen, including real
+              customer data</strong>, so it is off unless you switch it on. Captures are
+              stripped of scripts and styles, and are deleted with their runs by the
+              retention purge.
+            </p>
+            <div class="sec-foot">
+              <button data-cap="manage" class="btn btn-p btn-sm" onclick="saveDiagSettings()">Save</button>
+            </div>
+          </div>
           </section>
 
           <section class="set-pane" id="spane-git">
@@ -1125,6 +1146,24 @@
   <div class="modal modal-xl">
     <div class="mhdr"><h3 id="rpt-title">Report</h3><button class="mclose" onclick="closeModal('modal-report')">×</button></div>
     <iframe id="rpt-frame" style="flex:1;border:none;border-radius:8px" src="about:blank"></iframe>
+  </div>
+</div>
+
+<!-- Captured page at failure. Source, not a rendering: the capture has its
+     styles stripped and its images point at the application's own host, so
+     showing it as a page produces something that looks broken and misleads. -->
+<div class="overlay" id="modal-capture">
+  <div class="modal modal-xl">
+    <div class="mhdr"><h3>Page at failure</h3><button class="mclose" onclick="closeModal('modal-capture')">×</button></div>
+    <div class="cap-meta" id="cap-meta"></div>
+    <div class="cap-bar">
+      <span class="fb-search" style="flex:1 1 260px">
+        <input id="cap-find" type="text" placeholder="Find in the markup…" oninput="capRender()">
+      </span>
+      <span class="u-hint" id="cap-hits"></span>
+      <a class="btn btn-sm btn-o" id="cap-raw" href="#" target="_blank" rel="noopener">Open raw file</a>
+    </div>
+    <pre class="cap-src" id="cap-src"></pre>
   </div>
 </div>
 

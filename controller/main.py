@@ -35,6 +35,7 @@ from scheduler import (
     scheduled_job_ids, start_scheduler, stop_scheduler,
 )
 import git_sync
+import locator_repair
 import mailer
 import maintenance
 
@@ -192,6 +193,8 @@ _metrics = {
     "tests_timeout":  0,
     "test_seconds":   0.0,
     "test_count":     0,
+    "dom_captures":   0,
+    "dom_proposals":  0,
     "started_at":     datetime.now(),
 }
 
@@ -388,6 +391,11 @@ def _project_results(project_id: int) -> Path:
     p = RESULTS_DIR / str(project_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+# Shipped in the image, never in SUITES_DIR: a tester must not be able to edit
+# or delete the listener, and git sync must never see it.
+DOM_LISTENER = Path(__file__).parent / "rf_listener" / "brace_capture.py"
 
 
 def _get_project_role(project_id: int, username: str, user_system_role: str) -> Optional[str]:
@@ -689,6 +697,7 @@ class ProjectUpdate(BaseModel):
     name:        Optional[str] = None
     description: Optional[str] = None
     status:      Optional[str] = None
+    dom_capture_enabled: Optional[bool] = None
 
 
 @app.get("/api/projects")
@@ -781,10 +790,14 @@ def update_project(project_id: int, req: ProjectUpdate, user=Depends(_proj_admin
     if req.description is not None:
                         conn.execute("UPDATE projects SET description=? WHERE id=?", (req.description, project_id))
     if req.status:      conn.execute("UPDATE projects SET status=?      WHERE id=?", (req.status,      project_id))
+    if req.dom_capture_enabled is not None:
+                        conn.execute("UPDATE projects SET dom_capture_enabled=? WHERE id=?",
+                                     (1 if req.dom_capture_enabled else 0, project_id))
     conn.commit()
     conn.close()
     audit(user, "project.update", project_id=project_id,
-          name=req.name, status=req.status)
+          name=req.name, status=req.status,
+          dom_capture_enabled=req.dom_capture_enabled)
     return {"ok": True}
 
 
@@ -2154,6 +2167,42 @@ async def _execute_run(run_id: str, project_id: int, items: list, extra_args: Op
 _IMG_SRC_RE = re.compile(r'src="([^"]+)"')
 
 
+_DATA_URI_RE = re.compile(r"^data:image/(png|jpe?g|gif|webp);base64,(.+)$", re.I | re.S)
+MAX_EMBED_SHOT_BYTES = 8 * 1024 * 1024
+
+
+def _write_embedded_shot(data_uri: str, item_dir: Path) -> Optional[str]:
+    """Decode an embedded screenshot to a file so the UI can display it.
+
+    `Capture Page Screenshot  EMBED` puts the image inline in output.xml rather
+    than on disk. The failure box needs a URL, so the chosen one is written out
+    once, here. Only the chosen one: a ten-iteration loop can embed ten
+    full-page screenshots and writing them all would double the run's disk use
+    for images nobody opens.
+    """
+    m = _DATA_URI_RE.match(data_uri.strip())
+    if not m:
+        return None
+    import base64
+    import hashlib
+    try:
+        blob = base64.b64decode(m.group(2), validate=False)
+    except Exception:                                  # noqa: BLE001 — cosmetic
+        return None
+    if not blob or len(blob) > MAX_EMBED_SHOT_BYTES:
+        return None
+    ext  = "jpg" if m.group(1).lower() in ("jpg", "jpeg") else m.group(1).lower()
+    # Content-addressed, so re-extracting the same failure overwrites rather
+    # than accumulating, and two identical captures share one file.
+    name = f"brace-embed-{hashlib.sha1(blob).hexdigest()[:12]}.{ext}"
+    try:
+        (item_dir / name).write_bytes(blob)
+    except OSError as exc:
+        log.debug("Could not write embedded screenshot: %s", exc)
+        return None
+    return name
+
+
 def _extract_failure(out_xml: Path, item_dir: Path):
     """Return (summary, detail, screenshot_name) for a failed output.xml.
 
@@ -2177,6 +2226,7 @@ def _extract_failure(out_xml: Path, item_dir: Path):
     # inherit FAIL from their children, so the outermost would just say
     # "Run Test", which explains nothing.
     kw_name = kw_owner = None
+    fail_kw = None
     for kw in root.iter("kw"):
         st = kw.find("status")
         if st is None or st.get("status") != "FAIL":
@@ -2184,6 +2234,7 @@ def _extract_failure(out_xml: Path, item_dir: Path):
         if any(c.find("status") is not None and c.find("status").get("status") == "FAIL"
                for c in kw.findall("kw")):
             continue                                  # a child failed; not the leaf
+        fail_kw  = kw
         kw_name  = kw.get("name") or kw_name
         # 'owner' (RF 7) / 'library' (RF <=6) — worth showing: it separates a
         # SeleniumLibrary timeout from a failure in the team's own resource file.
@@ -2202,20 +2253,56 @@ def _extract_failure(out_xml: Path, item_dir: Path):
         summary = f"{kw_name} ({kw_owner})"
 
     # Selenium logs screenshots as an html msg holding an <img src="...">.
-    shot = None
-    for msg in root.iter("msg"):
-        if msg.get("html") != "true" or not msg.text:
+    #
+    # Which one to show is not "the last": a suite teardown that navigates home
+    # and captures again leaves the final screenshot showing the dashboard, and
+    # the failure box then contradicts the log. Take the last screenshot up to
+    # the END of the failing keyword's subtree — the end, not the start, because
+    # SeleniumLibrary's own run-on-failure capture is logged as a child of the
+    # keyword that failed, and that is the single most useful image there is.
+    # A screenshot comes in one of two forms, and only handling the first is
+    # why the failure box used to show a stale image: `Capture Page Screenshot
+    # EMBED` — which is what a suite using the keyword directly nearly always
+    # does — has no file at all. The image is a base64 data: URI inside
+    # output.xml. Skipping those left only the automatic run-on-failure
+    # captures, and those fire on swallowed failures inside
+    # `Run Keyword And Return Status` early in the test, so the newest file on
+    # disk could easily be from minutes before the real failure.
+    base  = item_dir.resolve()
+    shots = []                                # (position, kind, payload)
+    fail_start = fail_end = None
+    for i, el in enumerate(root.iter()):
+        if el is fail_kw:
+            fail_start = i
+        if el.tag != "msg" or el.get("html") != "true" or not el.text:
             continue
-        m = _IMG_SRC_RE.search(msg.text)
+        m = _IMG_SRC_RE.search(el.text)
         if not m:
             continue
-        name = m.group(1).split("/")[-1]
+        src = m.group(1)
+        if src.startswith("data:image/"):
+            shots.append((i, "embed", src))
+            continue
+        name = src.split("/")[-1]
         # Robot writes screenshots beside output.xml; confirm before pointing
         # the UI at it, and keep it inside item_dir so a crafted src cannot
         # escape into another run's directory.
-        cand = (item_dir / name).resolve()
-        if _contained(item_dir.resolve(), cand) and cand.is_file():
-            shot = name                               # last one = closest to the failure
+        cand = (base / name).resolve()
+        if _contained(base, cand) and cand.is_file():
+            shots.append((i, "file", name))
+    if fail_start is not None and fail_kw is not None:
+        fail_end = fail_start + sum(1 for _ in fail_kw.iter())
+
+    chosen = None
+    if shots:
+        upto = [s for s in shots if fail_end is None or s[0] < fail_end]
+        chosen = (upto or shots)[-1]
+
+    shot = None
+    if chosen and chosen[1] == "file":
+        shot = chosen[2]
+    elif chosen:
+        shot = _write_embedded_shot(chosen[2], item_dir)
 
     if detail and len(detail) > 2000:
         detail = detail[:2000] + " …"
@@ -2279,8 +2366,118 @@ def _db_write(statements: list) -> None:
         conn.close()
 
 
+# ── Failure-time page capture ────────────────────────────────────
+def _dom_capture_enabled(project_id: int) -> bool:
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT dom_capture_enabled FROM projects WHERE id=?",
+                           (project_id,)).fetchone()
+    except Exception:                                  # noqa: BLE001 — pre-migration DB
+        return False
+    finally:
+        conn.close()
+    return bool(row and row["dom_capture_enabled"])
+
+
+def _read_captures(item_dir: Path) -> list:
+    """The listener's sidecar metadata for this item, oldest first."""
+    d = item_dir / "dom"
+    if not d.is_dir():
+        return []
+    import json as _json
+    out = []
+    for meta in sorted(d.glob("*.json")):
+        try:
+            out.append(_json.loads(meta.read_text(encoding="utf-8")))
+        except Exception:                              # noqa: BLE001 — a bad sidecar is not fatal
+            continue
+    return out
+
+
+def _locator_signature(locator: str, suite_path: Optional[str]) -> str:
+    """Collapse the same broken locator across every test that hits it.
+
+    Interim definition: the locator plus the suite it appears in. When the
+    failure-signature layer lands this should key off that instead, so one
+    renamed element is one row even across suites.
+    """
+    import hashlib
+    raw = f"{(locator or '').strip()}||{(suite_path or '').strip()}"
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _record_capture(project_id: int, run_id: str, item_id: int, tc: dict,
+                    item_dir: Path, fail_detail: Optional[str] = None) -> tuple:
+    """Record the capture against the item and upsert its repair proposal.
+
+    Blocking — call through to_thread. Returns (relative html path, locator,
+    signature) for the caller's own UPDATE, so the item is written once rather
+    than twice.
+    """
+    import json as _json
+    caps = _read_captures(item_dir)
+    if not caps:
+        return (None, None, None)
+
+    first   = caps[0]
+    rel     = f"{item_dir.name}/dom/{first.get('html_file')}"
+    # The listener only sees the failing keyword's own arguments, and that
+    # keyword is often a wrapper that fails with a human message. Robot's
+    # recorded failure text usually still names the locator, so fall back to it
+    # rather than giving up.
+    locator = first.get("locator") or locator_repair.locator_from_message(
+        first.get("message")) or locator_repair.locator_from_message(fail_detail)
+    if not locator:
+        return (rel, None, None)
+
+    suite_path = tc.get("suite_path")
+    sig        = _locator_signature(locator, suite_path)
+
+    # The deterministic shortlist. No model, no network — see locator_repair.
+    shortlist = None
+    try:
+        html = (item_dir / "dom" / str(first.get("html_file"))).read_text(
+            encoding="utf-8", errors="replace")
+        shortlist = locator_repair.candidates(html, locator)
+    except Exception as exc:                           # noqa: BLE001 — advisory feature
+        log.debug("Locator shortlist failed for %s: %s", run_id, exc)
+
+    cand = _json.dumps(shortlist["candidates"]) if shortlist else None
+    prop = _json.dumps(shortlist["proposed"]) if (shortlist and shortlist["proposed"]) else None
+    now  = datetime.now().isoformat()
+    _metrics["dom_captures"] += 1
+    if prop:
+        _metrics["dom_proposals"] += 1
+
+    conn = get_db()
+    try:
+        # A decided proposal is not overwritten by the next occurrence — the
+        # count and timestamps move, somebody's rejection stands.
+        conn.execute("""
+            INSERT INTO locator_proposals
+                (project_id, signature, failed_locator, suite_path, tc_code,
+                 candidates, proposed, first_seen, last_seen, last_run_id, last_item_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(project_id, signature) DO UPDATE SET
+                occurrences  = occurrences + 1,
+                last_seen    = excluded.last_seen,
+                last_run_id  = excluded.last_run_id,
+                last_item_id = excluded.last_item_id,
+                candidates   = CASE WHEN status='new' THEN excluded.candidates ELSE candidates END,
+                proposed     = CASE WHEN status='new' THEN excluded.proposed   ELSE proposed   END
+        """, (project_id, sig, locator, suite_path, tc.get("tc_code"),
+              cand, prop, now, now, run_id, item_id))
+        conn.commit()
+    except Exception as exc:                           # noqa: BLE001 — never fail a run for this
+        log.debug("Could not record locator proposal for %s: %s", run_id, exc)
+    finally:
+        conn.close()
+    return (rel, locator, sig)
+
+
 async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Optional[str],
-                        run_dir: Path, suites_dir: Path, tally: dict) -> Optional[str]:
+                        run_dir: Path, suites_dir: Path, tally: dict,
+                        dom_capture: bool = False) -> Optional[str]:
     """Execute one test case. Returns its output.xml path, or None.
 
     Split out of _run_suite so several can be in flight at once. Every robot
@@ -2320,6 +2517,10 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
             "--variable",   f"RUN_ID:{run_id}",
             "--variable",   f"BSS_ENV:{BSS_ENV}",
         ]
+        # Injected by BRACE rather than added to the suites, so the capability
+        # arrives with an upgrade and no test file changes.
+        if dom_capture and DOM_LISTENER.is_file():
+            cmd += ["--listener", f"{DOM_LISTENER}:{item_dir}"]
         # shlex, not str.split: a git-synced case carries --test "Verify Login",
         # and splitting that on whitespace hands robot two broken fragments.
         if tc.get("extra_args"):
@@ -2384,11 +2585,23 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
         except Exception as exc:                       # noqa: BLE001 — cosmetic
             log.debug("Could not extract failure detail for %s: %s", rf_run_id, exc)
 
+    # The page as it was when a locator failed, plus the deterministic repair
+    # shortlist. Only reached when the listener actually wrote something.
+    dom_rel = failed_locator = locator_sig = None
+    if status == "failed" and dom_capture:
+        try:
+            dom_rel, failed_locator, locator_sig = await asyncio.to_thread(
+                _record_capture, project_id, run_id, item_id, tc, item_dir, fail_detail)
+        except Exception as exc:                       # noqa: BLE001 — advisory feature
+            log.debug("Could not record page capture for %s: %s", rf_run_id, exc)
+
     now = datetime.now().isoformat()
     await asyncio.to_thread(_db_write, [
         ("UPDATE test_run_items SET status=?, finished_at=?, fail_summary=?,"
-         " fail_detail=?, fail_screenshot=? WHERE id=?",
-         (status, now, fail_summary, fail_detail, fail_shot, item_id)),
+         " fail_detail=?, fail_screenshot=?, dom_capture=?, failed_locator=?,"
+         " locator_sig=? WHERE id=?",
+         (status, now, fail_summary, fail_detail, fail_shot, dom_rel,
+          failed_locator, locator_sig, item_id)),
         ("UPDATE test_cases SET last_run_status=?, last_run_at=? WHERE id=?",
          (status, now, tc["id"])),
     ])
@@ -2419,6 +2632,9 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
     run_dir.mkdir(parents=True, exist_ok=True)
     suites_dir  = _project_suites(project_id)
     tally       = {"passed": 0, "failed": 0}
+    # Read once for the whole run, not per case: it is a project setting and a
+    # per-item query would be one more SQLite read per browser started.
+    dom_capture = await asyncio.to_thread(_dom_capture_enabled, project_id)
 
     width = max(1, min(MAX_CONCURRENT_TESTS, parallel or RUN_PARALLEL_DEFAULT, len(items)))
     gate  = asyncio.Semaphore(width)
@@ -2430,7 +2646,7 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
             if run_id in _cancelled_runs or run_id not in _active_runs:
                 return None
             return await _run_one_item(run_id, project_id, item, extra_args,
-                                       run_dir, suites_dir, tally)
+                                       run_dir, suites_dir, tally, dom_capture)
 
     log.info("Run executing", extra={"run_id": run_id, "project_id": project_id,
                                      "total": len(items), "parallel": width})
@@ -3163,7 +3379,140 @@ def get_run_item(run_id: str, item_id: int, user=Depends(_current_user)):
     i = dict(row)
     i["has_log"], i["has_report"] = _item_files(
         _project_results(tr["project_id"]) / run_id, row["rf_run_id"])
+
+    # Page captured at the moment the locator failed, and the repair shortlist
+    # computed from it. Absent on every run where capture is off, which is the
+    # default — so this stays a small conditional block, not a required join.
+    if row["dom_capture"]:
+        import json as _json
+        item_dir = _project_results(tr["project_id"]) / run_id / row["rf_run_id"]
+        i["captures"] = _read_captures(item_dir)
+        prop = None
+        if row["locator_sig"]:
+            conn2 = get_db()
+            prop = conn2.execute(
+                "SELECT * FROM locator_proposals WHERE project_id=? AND signature=?",
+                (tr["project_id"], row["locator_sig"]),
+            ).fetchone()
+            conn2.close()
+        if prop:
+            p = dict(prop)
+            for k in ("candidates", "proposed"):
+                try:
+                    p[k] = _json.loads(p[k]) if p[k] else None
+                except Exception:                      # noqa: BLE001 — advisory
+                    p[k] = None
+            i["locator_repair"] = p
     return i
+
+
+# ══════════════════════════════════════════════════════════════════
+# LOCATOR REPAIR
+# ══════════════════════════════════════════════════════════════════
+# Deterministic only. Everything here works with no API key, no outbound
+# connectivity and no model — which is the point: most locator breakage is a
+# renamed id, and that is a string-similarity problem.
+
+def _prop_json(row) -> dict:
+    import json as _json
+    d = dict(row)
+    for k in ("candidates", "proposed"):
+        try:
+            d[k] = _json.loads(d[k]) if d[k] else None
+        except Exception:                              # noqa: BLE001 — advisory
+            d[k] = None
+    return d
+
+
+@app.get("/api/projects/{project_id}/locator-proposals")
+def list_locator_proposals(project_id: int, status: Optional[str] = None,
+                           user=Depends(_proj_viewer)):
+    """Broken locators for this project, most-recently-seen first.
+
+    One row per distinct locator, not per failed test — twelve cases broken by
+    one renamed button are one entry with occurrences=12.
+    """
+    sql    = "SELECT * FROM locator_proposals WHERE project_id=?"
+    params = [project_id]
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    sql += " ORDER BY last_seen DESC, id DESC LIMIT 200"
+    conn = get_db()
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [_prop_json(r) for r in rows]
+
+
+@app.post("/api/projects/{project_id}/locator-proposals/{prop_id}/recompute")
+def recompute_locator_proposal(project_id: int, prop_id: int, user=Depends(_proj_tester)):
+    """Re-run the shortlist against the stored capture.
+
+    Worth having because the scoring changes as BRACE improves, and because a
+    proposal computed before somebody fixed the page is stale.
+    """
+    import json as _json
+    conn = get_db()
+    row = conn.execute("SELECT * FROM locator_proposals WHERE id=? AND project_id=?",
+                       (prop_id, project_id)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Proposal not found")
+
+    item = conn.execute("SELECT run_id, rf_run_id, dom_capture FROM test_run_items"
+                        " WHERE id=?", (row["last_item_id"],)).fetchone()
+    if not item or not item["dom_capture"]:
+        conn.close()
+        raise HTTPException(409, "The captured page for this locator is no longer on disk")
+
+    path = _project_results(project_id) / item["run_id"] / item["dom_capture"]
+    if not path.is_file():
+        conn.close()
+        raise HTTPException(409, "The captured page has been purged")
+
+    shortlist = locator_repair.candidates(
+        path.read_text(encoding="utf-8", errors="replace"), row["failed_locator"])
+    conn.execute("UPDATE locator_proposals SET candidates=?, proposed=? WHERE id=?",
+                 (_json.dumps(shortlist["candidates"]),
+                  _json.dumps(shortlist["proposed"]) if shortlist["proposed"] else None,
+                  prop_id))
+    conn.commit()
+    out = conn.execute("SELECT * FROM locator_proposals WHERE id=?", (prop_id,)).fetchone()
+    conn.close()
+    audit(user, "locator.recompute", project_id=project_id, target=row["failed_locator"])
+    return _prop_json(out)
+
+
+class LocatorDecision(BaseModel):
+    status: str          # rejected | new
+
+
+@app.post("/api/projects/{project_id}/locator-proposals/{prop_id}/decide")
+def decide_locator_proposal(project_id: int, prop_id: int, req: LocatorDecision,
+                            user=Depends(_proj_tester)):
+    """Reject a proposal, or reopen one.
+
+    'applied' is deliberately not settable here. Applying a change to a suite
+    belongs to the verify-and-branch flow, not to a status field — a test that
+    was marked fixed without anything being edited is worse than a broken one.
+    """
+    if req.status not in ("rejected", "new"):
+        raise HTTPException(400, "status must be 'rejected' or 'new'")
+    conn = get_db()
+    row = conn.execute("SELECT failed_locator FROM locator_proposals"
+                       " WHERE id=? AND project_id=?", (prop_id, project_id)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Proposal not found")
+    conn.execute("UPDATE locator_proposals SET status=?, decided_by=?, decided_at=?"
+                 " WHERE id=?",
+                 (req.status, user["username"],
+                  datetime.now().isoformat() if req.status != "new" else None, prop_id))
+    conn.commit()
+    conn.close()
+    audit(user, "locator.decide", project_id=project_id,
+          target=row["failed_locator"], status=req.status)
+    return {"ok": True}
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -3311,11 +3660,36 @@ async def stream_run_log(run_id: str, user=Depends(_current_user)):
 
 
 # ── Report file serving ──────────────────────────────────────────
+# Set once a query token has been accepted, so the relative links inside
+# Robot's own report and log keep working. Path-scoped, HttpOnly, and it
+# expires with the token that created it.
+RESULTS_COOKIE = "brace_results"
+
+
+@app.post("/api/auth/logout")
+def logout(user=Depends(_current_user)):
+    """Drop the results cookie. The JWT itself is discarded by the browser.
+
+    Without this the cookie outlives the session, and on a shared machine the
+    next person could still open the previous user's run reports by URL.
+    """
+    resp = Response(status_code=204)
+    resp.delete_cookie(RESULTS_COOKIE, path="/results")
+    return resp
 @app.get("/results/{project_id}/{run_id}/{subpath:path}")
 async def serve_result(project_id: int, run_id: str, subpath: str,
                        request: Request, token: Optional[str] = None):
-    # Accept token from query param (iframe) or Authorization header (API calls)
-    raw = token or (request.headers.get("authorization", "").removeprefix("Bearer ").strip() or None)
+    # Three ways in, and all three are needed:
+    #   * ?token=      — the iframe and <img>, which cannot set a header;
+    #   * Authorization — API calls;
+    #   * cookie       — everything log.html links to from inside that iframe.
+    # Robot's report and log link to each other and to their screenshots with
+    # relative URLs. Only the first request carries the query token, so every
+    # link inside the report answered "Not authenticated" until the successful
+    # first request started leaving a cookie behind.
+    raw = (token
+           or (request.headers.get("authorization", "").removeprefix("Bearer ").strip() or None)
+           or request.cookies.get(RESULTS_COOKIE))
     if not raw:
         raise HTTPException(401, "Not authenticated")
     try:
@@ -3334,7 +3708,18 @@ async def serve_result(project_id: int, run_id: str, subpath: str,
         raise HTTPException(400, "Path traversal denied")
     if not path.is_file():
         raise HTTPException(404, "File not found")
-    return FileResponse(str(path))
+
+    resp = FileResponse(str(path))
+    # Scoped to /results and HttpOnly, so it is not a general session cookie and
+    # script cannot read it. It carries no more authority than the token in the
+    # URL that has just been accepted, and expires with it.
+    if token and payload.get("exp"):
+        max_age = int(payload["exp"] - datetime.now().timestamp())
+        if max_age > 0:
+            resp.set_cookie(RESULTS_COOKIE, raw, max_age=max_age, path="/results",
+                            httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https")
+    return resp
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -4380,6 +4765,14 @@ def metrics():
     for state, key in (("passed", "tests_passed"), ("failed", "tests_failed"),
                        ("timeout", "tests_timeout")):
         out.append(f'brace_tests_total{{outcome="{state}"}} {m[key]}')
+
+    # Captures are the largest artefact this writes, so they are worth watching
+    # on the same dashboard as the disk gauge below.
+    emit("brace_dom_captures_total", "counter",
+         "Pages captured at locator failure since start.", m["dom_captures"])
+    emit("brace_locator_proposals_total", "counter",
+         "Locator replacements proposed deterministically since start.",
+         m["dom_proposals"])
 
     emit("brace_test_duration_seconds_sum", "counter",
          "Total test-case execution seconds.", round(m["test_seconds"], 1))

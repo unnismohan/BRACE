@@ -529,6 +529,54 @@ function failureBlock(it) {
     ${it.fail_detail?`<div class="fb-msg">${esc(it.fail_detail)}</div>`:''}
     ${shot?`<a href="${esc(shot)}" target="_blank" rel="noopener" title="Open full screenshot">
       <img class="fb-shot" src="${esc(shot)}" alt="Screenshot at failure"></a>`:''}
+    ${locatorBlock(it)}
+  </div>`;
+}
+
+// The page as it was when a locator failed, and the elements it most likely
+// meant. Only present when the project has capture switched on and the failure
+// was a locator failure, so on most rows this renders nothing at all.
+function locatorBlock(it) {
+  if (!it.dom_capture) return '';
+  const rep  = it.locator_repair || {};
+  const cands = rep.candidates || [];
+  const prop  = rep.proposed;
+
+  let body = '';
+  if (prop) {
+    // Deterministic match, no model involved — say so, because "we found it by
+    // comparing strings" is a stronger claim to a reviewer than "AI suggests".
+    body += `<div class="loc-prop">
+      <div class="loc-prop-hd">Likely replacement
+        <span class="loc-conf">${Math.round((prop.confidence||0)*100)}% match</span></div>
+      <code class="loc-code">${esc(prop.locator)}</code>
+      <div class="u-hint">${esc(prop.rationale||'')} — proposal only, nothing has been changed.</div>
+    </div>`;
+  }
+  if (cands.length) {
+    body += `<table class="loc-tbl"><thead><tr>
+        <th>Element</th><th>Suggested locator</th><th>Why</th><th class="ta-r">Score</th>
+      </tr></thead><tbody>`
+      + cands.map(c => `<tr>
+          <td><code>&lt;${esc(c.tag)}&gt;</code>${c.text?` <span class="u-muted">${esc(c.text)}</span>`:''}</td>
+          <td>${c.suggestion?`<code class="loc-code">${esc(c.suggestion)}</code>`:'<span class="u-muted">—</span>'}</td>
+          <td class="u-muted">${esc(c.why||'')}</td>
+          <td class="ta-r">${Math.round((c.score||0)*100)}%</td>
+        </tr>`).join('')
+      + `</tbody></table>`;
+  } else if (!prop) {
+    body += `<div class="u-hint">No element in the captured page resembles this locator.
+      That usually means the page never reached the expected state — check the
+      captured page and the screenshot above.</div>`;
+  }
+
+  return `<div class="loc-box">
+    <div class="loc-hd">
+      <strong>Page at failure</strong>
+      ${it.failed_locator?`<code class="loc-code loc-failed">${esc(it.failed_locator)}</code>`:''}
+      <button class="btn btn-sm btn-o" onclick="openCapture(${it.id})">View page markup</button>
+    </div>
+    ${body}
   </div>`;
 }
 
@@ -575,6 +623,87 @@ async function cancelRun(runId) {
       { okText: 'Cancel Run' })) return;
   try { await api('POST', `/runs/${runId}/cancel`); toast('Cancelled','i'); loadRuns(); }
   catch(e) { toast(e.message,'e'); }
+}
+
+// ── Captured page viewer ───────────────────────────────
+// Source, deliberately, not a rendering. The capture has its <style> blocks
+// stripped and every stylesheet and image in it points at the application's
+// own host, so a browser asked to render it draws unstyled markup, broken
+// images, and every dialog the page had hidden by CSS all at once. That looks
+// like a bug in BRACE and tells you nothing. What the capture is for is
+// finding an element, and for that the markup is the honest view.
+let _capText = '';
+
+function capDefaultTerm(it) {
+  // Open on something worth looking at: the distinguishing attribute of the
+  // best candidate, or failing that the name inside the locator that broke.
+  const top = ((it.locator_repair || {}).candidates || [])[0];
+  if (top) {
+    const a = top.attrs || {};
+    const v = a['data-testid'] || a['data-test'] || a.id || a.name;
+    if (v) return v;
+  }
+  const raw = it.failed_locator || '';
+  const quoted = raw.match(/['"]([^'"]{2,80})['"]/);
+  if (quoted) return quoted[1];
+  const bare = raw.replace(/^[a-zA-Z][a-zA-Z \-]{0,18}\s*[:=]\s*/, '').trim();
+  return bare.length <= 80 ? bare : '';
+}
+
+async function openCapture(itemId) {
+  const it = _rd && _rd.detail && _rd.detail[itemId];
+  if (!it || !it.dom_capture) return;
+  const meta = (it.captures || [])[0] || {};
+  const url  = `/results/${_curProj.id}/${_rd.runId}/${it.dom_capture}`;
+
+  document.getElementById('cap-meta').innerHTML = `
+    ${meta.url?`<div><span>Address</span><code>${esc(meta.url)}</code></div>`:''}
+    ${meta.title?`<div><span>Title</span>${esc(meta.title)}</div>`:''}
+    ${meta.captured?`<div><span>Captured</span>${esc(meta.captured.replace('T',' '))}</div>`:''}
+    ${meta.bytes_original?`<div><span>Size</span>${Math.round(meta.bytes_original/1024)} KB of markup,
+        reduced to ${Math.round((meta.bytes_pruned||0)/1024)} KB with scripts, styles and images removed
+        ${meta.truncated?' <b>(truncated)</b>':''}</div>`:''}`;
+  document.getElementById('cap-raw').href = url
+    + `?token=${encodeURIComponent(_token||'')}`;
+  document.getElementById('cap-find').value = capDefaultTerm(it);
+
+  const pre = document.getElementById('cap-src');
+  pre.textContent = 'Loading the captured markup…';
+  document.getElementById('cap-hits').textContent = '';
+  showModal('modal-capture');
+  try {
+    const r = await fetch(url, { headers: _token ? { Authorization: `Bearer ${_token}` } : {} });
+    if (!r.ok) throw new Error(r.status === 404
+      ? 'The captured page is no longer on disk — it was removed with its run by the retention purge.'
+      : `Could not load the capture (HTTP ${r.status}).`);
+    _capText = await r.text();
+    capRender();
+  } catch (e) {
+    _capText = '';
+    pre.textContent = e.message;
+  }
+}
+
+function capRender() {
+  const pre = document.getElementById('cap-src');
+  if (!pre || !_capText) return;
+  const term = (document.getElementById('cap-find').value || '').trim();
+  const hits = document.getElementById('cap-hits');
+
+  if (!term) {
+    pre.textContent = _capText;
+    hits.textContent = '';
+    return;
+  }
+  // Escape first, then mark: doing it the other way round would let the
+  // captured markup's own tags through into the viewer.
+  const safe = esc(_capText);
+  const rx   = new RegExp(esc(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  let n = 0;
+  pre.innerHTML = safe.replace(rx, m => { n++; return `<mark>${m}</mark>`; });
+  hits.textContent = n ? `${n} match${n === 1 ? '' : 'es'}` : 'no match';
+  const first = pre.querySelector('mark');
+  if (first) first.scrollIntoView({ block: 'center' });
 }
 
 function openReport(url, title) {
