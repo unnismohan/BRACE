@@ -59,7 +59,7 @@ RUN mkdir -p /mnt/rootfs /tmp/rpms && \
     dnf -y --installroot=/mnt/rootfs --releasever=9 --setopt=install_weak_deps=0 --nodocs \
         --downloadonly --downloaddir=/tmp/rpms install \
         bash python3.14 python3.14-pip ca-certificates shadow-utils git \
-        tzdata \
+        tzdata xorg-x11-server-Xvfb xorg-x11-utils \
         alsa-lib atk at-spi2-atk at-spi2-core cups-libs dbus-libs libdrm mesa-libgbm gtk3 \
         nspr nss nss-util libX11 libXcomposite libXdamage libXext libXfixes libXrandr libXtst \
         libxcb libxkbcommon libwayland-client fontconfig freetype \
@@ -67,7 +67,8 @@ RUN mkdir -p /mnt/rootfs /tmp/rpms && \
         && \
     rpm --root /mnt/rootfs --initdb && \
     rpm --root /mnt/rootfs --noscripts --nodeps -Uvh /tmp/rpms/*.rpm && \
-    rm -rf /tmp/rpms
+    rm -rf /tmp/rpms && \
+    test -x /mnt/rootfs/usr/bin/Xvfb
 
 # SEC-11b kaniko-safe; post-scriptlet fixups; bare python/pip -> 3.14
 RUN rm -f /mnt/rootfs/usr/bin/newuidmap /mnt/rootfs/usr/bin/newgidmap && \
@@ -111,7 +112,7 @@ RUN pip3.14 install --no-cache-dir --upgrade pip && \
 # non-root rfuser (uid 1001), /opt/rf, OpenShift arbitrary-UID (/etc/passwd group-writable)
 RUN groupadd --root /mnt/rootfs -r rfuser && \
     useradd  --root /mnt/rootfs -r -g rfuser -u 1001 -d /opt/rf -s /bin/bash rfuser && \
-    mkdir -p /mnt/rootfs/opt/rf/results /mnt/rootfs/opt/rf/suites && \
+    mkdir -p /mnt/rootfs/opt/rf/config /mnt/rootfs/opt/rf/results /mnt/rootfs/opt/rf/suites && \
     chown -R 1001:0 /mnt/rootfs/opt/rf && chmod -R g=rwX /mnt/rootfs/opt/rf && \
     chmod g+w /mnt/rootfs/etc/passwd
 COPY entrypoint.sh            /mnt/rootfs/usr/local/bin/entrypoint.sh

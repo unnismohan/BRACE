@@ -161,3 +161,5 @@ implemented; its successful result must be recorded on a Docker-capable host.
 Shell entrypoints have enforced LF endings in .gitattributes so a Windows checkout remains runnable in the Linux image.
 
 The Compose controller publishes `0.0.0.0:8080:8080` for access through WSL and host network interfaces. The runner port remains internal.
+
+Docker startup fixes: the optimized image explicitly installs `xorg-x11-server-Xvfb` and `xorg-x11-utils`, checks that `/usr/bin/Xvfb` exists during the build, and creates `/opt/rf/config` before assigning UID 1001 ownership. Fresh named config volumes inherit this directory ownership. Existing volumes retain their old ownership; repair them with a one-off Compose controller command using `--user 0 --entrypoint /bin/bash` and `chown -R 1001:0 /opt/rf/config`. Rebuild the image and recreate both services after applying the image fixes. These fixes address the reported missing Xvfb and SQLite startup errors; the full image build still requires validation on the Docker host.
