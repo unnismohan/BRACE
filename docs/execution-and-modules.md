@@ -163,3 +163,13 @@ Shell entrypoints have enforced LF endings in .gitattributes so a Windows checko
 The Compose controller publishes `0.0.0.0:8080:8080` for access through WSL and host network interfaces. The runner port remains internal.
 
 Docker startup fixes: the optimized image explicitly installs `xorg-x11-server-Xvfb` and `xorg-x11-utils`, checks that `/usr/bin/Xvfb` exists during the build, and creates `/opt/rf/config` before assigning UID 1001 ownership. Fresh named config volumes inherit this directory ownership. Existing volumes retain their old ownership; repair them with a one-off Compose controller command using `--user 0 --entrypoint /bin/bash` and `chown -R 1001:0 /opt/rf/config`. Rebuild the image and recreate both services after applying the image fixes. These fixes address the reported missing Xvfb and SQLite startup errors; the full image build still requires validation on the Docker host.
+
+2026-10-05 browser review: inspected the running Docker UI's project overview, testcase search and history, suites, run setup, failure details, reports and profile settings. Reviewed screens produced no browser console warnings or errors. Existing run details showed Chrome 151 executing, with target hostname resolution failures; this does not establish full production smoke validation. Local browser verification confirmed these subsequent fixes:
+
+- Filtered testcase searches show “No test cases match” with a clear-filter action, rather than implying the project is empty.
+- Recent failure entries include their run name and start time, distinguishing repeated failures of the same case. The overview API adds `started_at` to each entry.
+- Browser hostname resolution errors provide guidance about the URL, runner DNS and permitted outbound networks.
+- History with no passing executions suggests inspecting logs, environment and data without asserting that the test or application is broken.
+- Empty run-picker pages display `0–0 of 0`. Frontend cache versions advance so rebuilt images serve the updated scripts.
+
+Validation: frontend syntax checks and overview Python compilation pass. Changes were reviewed in a disposable local UI with 125 cases; the running Docker deployment needs an image rebuild to receive them.

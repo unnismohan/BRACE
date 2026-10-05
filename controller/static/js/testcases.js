@@ -161,7 +161,7 @@ function renderTCs(fromServer=false) {
   if (clr) clr.hidden = !active;
 
   tbody.innerHTML = '';
-  if (!_tcs.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('file')}</div><h4>No test cases yet</h4><p>A test case points at one .robot file and gives it a stable ID that results are reported against.</p>${can('edit') ? '<button class="btn btn-p btn-sm" onclick="openNewTCModal()">'+ico('plus')+' Add a test case</button>' : ''}</div></td></tr>`; return; }
+  if (!_tcs.length && !active) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('file')}</div><h4>No test cases yet</h4><p>A test case points at one .robot file and gives it a stable ID that results are reported against.</p>${can('edit') ? '<button class="btn btn-p btn-sm" onclick="openNewTCModal()">'+ico('plus')+' Add a test case</button>' : ''}</div></td></tr>`; return; }
   if (!rows.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="eico">${ico('search')}</div><h4>No test cases match</h4><p>Nothing here fits the current filters.</p><button class="btn btn-o btn-sm" onclick="tcClearFilters()">Clear filters</button></div></td></tr>`; return; }
   rows.forEach(tc => {
     const tr = document.createElement('tr');
@@ -349,8 +349,8 @@ function renderTCHistory(d) {
   let banner = '';
   if (s.streak_status === 'failed' && s.streak === s.executions && s.executions > 2) {
     banner = `<div class="tch-banner err"><b>No passes on this page.</b> Failed all
-      ${s.executions} runs on this page — likely a broken test or an unimplemented feature,
-      rather than a regression.</div>`;
+      ${s.executions} runs on this page. Check the failure logs, environment and test data
+      before deciding whether the test or application needs a fix.</div>`;
   } else if (s.streak_status === 'failed' && s.failing_since) {
     banner = `<div class="tch-banner err"><b>Failing since
       ${esc((s.failing_since||'').replace('T',' ').slice(0,16))}</b> —

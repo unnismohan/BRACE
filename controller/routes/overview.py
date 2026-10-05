@@ -21,7 +21,7 @@ def overview(project_id: int, user=Depends(auth._proj_viewer)):
         failures = [
             dict(row)
             for row in conn.execute(
-                "SELECT tr.run_id,tr.run_name,tri.id AS item_id,tri.tc_name,tri.fail_summary FROM test_runs tr JOIN test_run_items tri ON tri.run_id=tr.run_id WHERE tr.project_id=? AND tri.status='failed' ORDER BY tr.started_at DESC,tr.id DESC,tri.id DESC LIMIT 8",
+                "SELECT tr.run_id,tr.run_name,tr.started_at,tri.id AS item_id,tri.tc_name,tri.fail_summary FROM test_runs tr JOIN test_run_items tri ON tri.run_id=tr.run_id WHERE tr.project_id=? AND tri.status='failed' ORDER BY tr.started_at DESC,tr.id DESC,tri.id DESC LIMIT 8",
                 (project_id,),
             )
         ]
