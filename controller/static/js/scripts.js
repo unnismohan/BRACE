@@ -1,4 +1,7 @@
 // BRACE v2 — scripts.js
+window.addEventListener('beforeunload', event => {
+  if (_dirty) { event.preventDefault(); event.returnValue = ''; }
+});
 // Part of the app bundle. Files are plain classic scripts loaded in a
 // fixed order by index.html (no modules, no build step — the runtime is
 // air-gapped). They share one global scope, so ORDER MATTERS: keep the

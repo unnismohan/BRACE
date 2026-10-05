@@ -82,9 +82,15 @@ Match the surrounding code. Beyond that:
 
 ## Testing
 
-There is no formal test suite yet — contributions welcome. Until then, verify by
-running the thing, and say in your MR what you actually checked. A real run
-against a real `.robot` file is worth more than an assertion that it should work.
+Regression tests live in `tests/`. Install the backend requirements plus the
+development-only `httpx` dependency, then run:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Tests use temporary storage and include real Robot process cancellation. See
+[the improvement log](docs/improvements.md) for coverage and platform limitations.
 
 At minimum, before opening an MR:
 

@@ -10,16 +10,17 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +28,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 
 from db import (
-    DB_PATH, decrypt_token, encrypt_token, get_db, init_db,
+    DB_PATH, database, encryption_available, decrypt_token, encrypt_token, get_db, init_db,
     next_tc_code, pwd_context, row_to_dict, rows_to_list,
 )
 from scheduler import (
@@ -38,6 +39,8 @@ import git_sync
 import locator_repair
 import mailer
 import maintenance
+from execution import map_bounded, terminate_tree
+from security import login_limiter, validate_password
 
 log = logging.getLogger(__name__)
 
@@ -226,9 +229,8 @@ def _preflight_security_check() -> None:
     elif len(JWT_SECRET) < 32:
         warnings.append(f"JWT_SECRET is only {len(JWT_SECRET)} chars; use 32+.")
 
-    if not os.getenv("BRACE_ENCRYPT_KEY", "").strip():
-        warnings.append("BRACE_ENCRYPT_KEY is not set — git tokens, the AI API key and "
-                        "the SMTP password are stored in plain text in the database.")
+    if not encryption_available():
+        problems.append("Credential encryption is unavailable. Set a valid BRACE_ENCRYPT_KEY.")
 
     # A container with no TZ runs in UTC while the team reads the UI in their own
     # zone, so every timestamp looks hours out. Cheap to detect, confusing to
@@ -363,18 +365,30 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=Fals
 
 
 def _make_token(username: str, system_role: str) -> str:
-    exp = datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MIN)
-    return jwt.encode({"sub": username, "role": system_role, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    exp = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MIN)
+    with database() as conn:
+        row = conn.execute("SELECT session_version FROM users WHERE username=?", (username,)).fetchone()
+    return jwt.encode({"sub": username, "role": system_role, "sv": row["session_version"], "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def _current_user(token: str = Depends(oauth2_scheme)) -> dict:
+def _authenticate(token: str, allow_password_change: bool = False) -> dict:
     if not token:
         raise HTTPException(401, "Not authenticated")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return {"username": payload["sub"], "role": payload.get("role", "user")}
     except JWTError:
         raise HTTPException(401, "Invalid or expired token")
+    with database() as conn:
+        row = conn.execute("SELECT username, system_role, session_version, must_change_password FROM users WHERE username=?", (payload.get("sub"),)).fetchone()
+    if not row or payload.get("sv") != row["session_version"]:
+        raise HTTPException(401, "Session revoked. Sign in again.")
+    if row["must_change_password"] and not allow_password_change:
+        raise HTTPException(403, "Password change required")
+    return {"username": row["username"], "role": row["system_role"]}
+
+
+def _current_user(request: Request, token: str = Depends(oauth2_scheme)) -> dict:
+    return _authenticate(token, request.url.path in {"/api/auth/change-password", "/api/auth/logout"})
 
 
 def _require_sys_admin(user=Depends(_current_user)):
@@ -524,7 +538,8 @@ class ChangePwRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request):
+    login_limiter.check(request.client.host if request.client else "unknown")
     conn = get_db()
     row = conn.execute("SELECT * FROM users WHERE username=?", (req.username,)).fetchone()
     conn.close()
@@ -542,18 +557,19 @@ def login(req: LoginRequest):
 
 @app.put("/api/auth/change-password")
 def change_password(req: ChangePwRequest, user=Depends(_current_user)):
+    validate_password(req.new_password)
     conn = get_db()
     row = conn.execute("SELECT * FROM users WHERE username=?", (user["username"],)).fetchone()
     if not row or not pwd_context.verify(req.old_password, row["password_hash"]):
         conn.close()
         raise HTTPException(400, "Current password incorrect")
     conn.execute(
-        "UPDATE users SET password_hash=?, must_change_password=0 WHERE username=?",
+        "UPDATE users SET password_hash=?, must_change_password=0, session_version=session_version+1 WHERE username=?",
         (pwd_context.hash(req.new_password), user["username"]),
     )
     conn.commit()
     conn.close()
-    return {"ok": True}
+    return {"ok": True, "access_token": _make_token(user["username"], user["role"])}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -587,12 +603,13 @@ def list_users():
 
 @app.post("/api/users")
 def create_user(req: UserCreate, user=Depends(_require_sys_admin)):
+    validate_password(req.password)
     if req.system_role not in ("user", "admin"):
         raise HTTPException(400, "system_role must be user or admin")
     conn = get_db()
     try:
         conn.execute(
-            "INSERT INTO users (username, password_hash, system_role, full_name, email) VALUES (?,?,?,?,?)",
+            "INSERT INTO users (username, password_hash, system_role, full_name, email, must_change_password) VALUES (?,?,?,?,?,1)",
             (req.username, pwd_context.hash(req.password), req.system_role, req.full_name, req.email),
         )
         conn.commit()
@@ -623,6 +640,7 @@ async def bulk_create_users(file: UploadFile = File(...), user=Depends(_require_
         if role not in ("user", "admin"):
             role = "user"
         try:
+            validate_password(password)
             conn.execute(
                 "INSERT INTO users (username, password_hash, system_role, full_name, email, must_change_password) VALUES (?,?,?,?,?,1)",
                 (username, pwd_context.hash(password), role,
@@ -640,6 +658,8 @@ async def bulk_create_users(file: UploadFile = File(...), user=Depends(_require_
 
 @app.put("/api/users/{uid}")
 def update_user(uid: int, req: UserUpdate, user=Depends(_require_sys_admin)):
+    if req.password:
+        validate_password(req.password)
     conn = get_db()
     before = conn.execute("SELECT username, system_role FROM users WHERE id=?",
                           (uid,)).fetchone()
@@ -647,9 +667,9 @@ def update_user(uid: int, req: UserUpdate, user=Depends(_require_sys_admin)):
         if req.system_role not in ("user", "admin"):
             conn.close()
             raise HTTPException(400, "Invalid system_role")
-        conn.execute("UPDATE users SET system_role=? WHERE id=?", (req.system_role, uid))
+        conn.execute("UPDATE users SET system_role=?, session_version=session_version+1 WHERE id=?", (req.system_role, uid))
     if req.password:
-        conn.execute("UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?",
+        conn.execute("UPDATE users SET password_hash=?, must_change_password=1, session_version=session_version+1 WHERE id=?",
                      (pwd_context.hash(req.password), uid))
     if req.full_name is not None:
         conn.execute("UPDATE users SET full_name=? WHERE id=?", (req.full_name, uid))
@@ -713,34 +733,33 @@ def list_projects(user=Depends(_current_user)):
             WHERE u.username=? ORDER BY p.name
         """, (user["username"],)).fetchall()
 
+    stats = {r["project_id"]: dict(r) for r in conn.execute("""
+        SELECT project_id, COUNT(*) total,
+               SUM(last_run_status='passed') passed, SUM(last_run_status='failed') failed
+        FROM test_cases GROUP BY project_id
+    """).fetchall()}
+    last_runs = {r["project_id"]: dict(r) for r in conn.execute("""
+        SELECT project_id, status, started_at FROM (
+            SELECT project_id, status, started_at,
+                   ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY started_at DESC, id DESC) rank
+            FROM test_runs
+        ) WHERE rank=1
+    """).fetchall()}
+    roles = {r["project_id"]: r["project_role"] for r in conn.execute("""
+        SELECT pm.project_id, pm.project_role FROM project_members pm
+        JOIN users u ON pm.user_id=u.id WHERE u.username=?
+    """, (user["username"],)).fetchall()}
     result = []
     for p in rows:
         d = dict(p)
-        d.pop("git_token", None)  # never expose token
-        # Enrich with stats
-        stats = conn.execute("""
-            SELECT COUNT(*) total,
-                   SUM(CASE WHEN last_run_status='passed' THEN 1 ELSE 0 END) passed,
-                   SUM(CASE WHEN last_run_status='failed' THEN 1 ELSE 0 END) failed
-            FROM test_cases WHERE project_id=?
-        """, (d["id"],)).fetchone()
-        last_run = conn.execute("""
-            SELECT status, started_at FROM test_runs
-            WHERE project_id=? ORDER BY started_at DESC, id DESC LIMIT 1
-        """, (d["id"],)).fetchone()
-        d["tc_count"]     = stats["total"] or 0
-        d["tc_passed"]    = stats["passed"] or 0
-        d["tc_failed"]    = stats["failed"] or 0
-        d["last_run_status"]  = last_run["status"]    if last_run else None
-        d["last_run_at"]      = last_run["started_at"] if last_run else None
-        d["has_git"]      = bool(d.get("git_url"))
-        # Caller's own role on this project — lets the UI hide admin-only views
-        d["my_role"] = ("project_admin" if user["role"] == "admin"
-                        else (conn.execute(
-                            """SELECT pm.project_role FROM project_members pm
-                               JOIN users u ON pm.user_id = u.id
-                               WHERE pm.project_id=? AND u.username=?""",
-                            (d["id"], user["username"])).fetchone() or {"project_role": None})["project_role"])
+        d.pop("git_token", None)
+        stat = stats.get(d["id"], {})
+        last_run = last_runs.get(d["id"], {})
+        d.update(tc_count=stat.get("total", 0), tc_passed=stat.get("passed") or 0,
+                 tc_failed=stat.get("failed") or 0,
+                 last_run_status=last_run.get("status"), last_run_at=last_run.get("started_at"),
+                 has_git=bool(d.get("git_url")),
+                 my_role="project_admin" if user["role"] == "admin" else roles.get(d["id"]))
         result.append(d)
     conn.close()
     return result
@@ -913,7 +932,7 @@ async def git_pull(project_id: int, user=Depends(_proj_tester)):
                     yield f"[BRACE] Removed stale lock: {lock.name}\n"
                 except OSError:
                     pass
-            r = await _run(["git", "-c", "http.sslVerify=false", "fetch", "--depth=1", "origin", branch], cwd=clone_dir)
+            r = await _run(["git", "fetch", "--depth=1", "origin", branch], cwd=clone_dir)
             yield _redact(r.stdout + r.stderr)
             if r.returncode == 0:
                 r2 = await _run(["git", "reset", "--hard", f"origin/{branch}"], cwd=clone_dir)
@@ -927,7 +946,7 @@ async def git_pull(project_id: int, user=Depends(_proj_tester)):
 
         if not clone_dir.exists():
             yield "[BRACE] Cloning repository…\n"
-            r = await _run(["git", "-c", "http.sslVerify=false", "clone", "--depth=1", "--branch", branch, git_url, str(clone_dir)])
+            r = await _run(["git", "clone", "--depth=1", "--branch", branch, git_url, str(clone_dir)])
             yield _redact(r.stdout + r.stderr)
             if r.returncode != 0:
                 yield f"\n[BRACE ERROR] Clone failed (exit {r.returncode})\n"
@@ -1527,10 +1546,12 @@ class TCUpdate(BaseModel):
 
 
 @app.get("/api/projects/{project_id}/test-cases")
-def list_test_cases(project_id: int, user=Depends(_proj_viewer)):
+def list_test_cases(project_id: int, limit: Optional[int] = Query(None, ge=1, le=500),
+                    offset: int = Query(0, ge=0), user=Depends(_proj_viewer)):
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM test_cases WHERE project_id=? ORDER BY tc_code", (project_id,)
+        "SELECT * FROM test_cases WHERE project_id=? ORDER BY tc_code LIMIT ? OFFSET ?",
+        (project_id, limit if limit is not None else -1, offset)
     ).fetchall()
     conn.close()
     return rows_to_list(rows)
@@ -2052,7 +2073,6 @@ def _start_run(project_id: int, tcs: list, run_name: str, username: str,
         (run_id, project_id, group_id, run_name, username, len(tcs),
          datetime.now().isoformat(timespec="seconds"), "queued", rerun_of),
     )
-    conn.commit()
 
     items = []
     for tc in tcs:
@@ -2060,9 +2080,9 @@ def _start_run(project_id: int, tcs: list, run_name: str, username: str,
             "INSERT INTO test_run_items (run_id, test_case_id, tc_code, tc_name, status) VALUES (?,?,?,?,?)",
             (run_id, tc["id"], tc["tc_code"], tc["name"], "pending"),
         )
-        conn.commit()
         item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         items.append({"item_id": item_id, "tc": tc})
+    conn.commit()
     conn.close()
 
     # Starts queued; _execute_run flips it to running once a slot frees up.
@@ -2357,13 +2377,9 @@ def _db_write(statements: list) -> None:
     finishing at once the whole server stops answering — including /health,
     which used to get the pod restarted mid-run.
     """
-    conn = get_db()
-    try:
+    with database() as conn:
         for sql, params in statements:
             conn.execute(sql, params)
-        conn.commit()
-    finally:
-        conn.close()
 
 
 # ── Failure-time page capture ────────────────────────────────────
@@ -2508,7 +2524,7 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
         target = suites_dir / suite_path if suite_path else suites_dir
 
         cmd = [
-            "python", "-m", "robot",
+            sys.executable, "-m", "robot",
             "--outputdir",  str(item_dir),
             "--output",     "output.xml",
             "--log",        "log.html",
@@ -2537,6 +2553,7 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
         with open(log_file, "w") as f:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=f, stderr=subprocess.STDOUT, env=env,
+                start_new_session=os.name != "nt",
             )
             _active_procs[rf_run_id] = proc
             try:
@@ -2546,15 +2563,14 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
             except asyncio.TimeoutError:
                 timed_out = True
                 log.warning("Test %s exceeded %ds — terminating.", rf_run_id, TEST_TIMEOUT_SEC)
-                proc.terminate()
-                try:
-                    exit_code = await asyncio.wait_for(proc.wait(), timeout=15)
-                except asyncio.TimeoutError:
-                    proc.kill()                      # SIGTERM ignored — force it
-                    exit_code = await proc.wait()
+                await terminate_tree(proc)
+                exit_code = proc.returncode
                 f.write(f"\n\n[BRACE] Timed out after {TEST_TIMEOUT_SEC}s and was terminated.\n")
             finally:
                 _active_procs.pop(rf_run_id, None)
+
+    if run_id in _cancelled_runs or run_id not in _active_runs:
+        return None
 
     status = "passed" if (exit_code == 0 and not timed_out) else "failed"
     if status == "passed":
@@ -2599,7 +2615,7 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
     await asyncio.to_thread(_db_write, [
         ("UPDATE test_run_items SET status=?, finished_at=?, fail_summary=?,"
          " fail_detail=?, fail_screenshot=?, dom_capture=?, failed_locator=?,"
-         " locator_sig=? WHERE id=?",
+         " locator_sig=? WHERE id=? AND status='running'",
          (status, now, fail_summary, fail_detail, fail_shot, dom_rel,
           failed_locator, locator_sig, item_id)),
         ("UPDATE test_cases SET last_run_status=?, last_run_at=? WHERE id=?",
@@ -2652,7 +2668,7 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
                                      "total": len(items), "parallel": width})
     # Results come back in submission order regardless of completion order, so
     # the merged report keeps the suite's original sequence.
-    results = await asyncio.gather(*(worker(i) for i in items), return_exceptions=True)
+    results = await map_bounded(items, worker, width)
 
     output_files = []
     for item, res in zip(items, results):
@@ -2677,6 +2693,7 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
     if run_id in _cancelled_runs or run_id not in _active_runs:
         log.info("Run %s cancelled — %d/%d case(s) completed.", run_id,
                  passed + failed, len(items))
+        return
 
     # Merge reports with rebot
     final_status = "passed" if failed == 0 else "failed"
@@ -2688,7 +2705,7 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
             # coroutine shares the event loop with every HTTP request.
             await asyncio.to_thread(
                 subprocess.run,
-                ["python", "-m", "robot.rebot",
+                [sys.executable, "-m", "robot.rebot",
                  "--outputdir", str(rebot_dir),
                  "--output", "output.xml",
                  "--log",    "log.html",
@@ -2995,7 +3012,7 @@ async def cancel_run(run_id: str, user=Depends(_current_user)):
         if key.startswith(run_id):
             proc = _active_procs.get(key)
             if proc:
-                proc.terminate()
+                await terminate_tree(proc)
     now = datetime.now().isoformat()
     conn.execute("UPDATE test_runs SET status='cancelled', finished_at=? WHERE run_id=?",
                  (now, run_id))
@@ -3013,14 +3030,15 @@ async def cancel_run(run_id: str, user=Depends(_current_user)):
 
 # ── Run listing & detail ─────────────────────────────────────────
 @app.get("/api/projects/{project_id}/runs")
-def list_runs(project_id: int, user=Depends(_proj_viewer)):
+def list_runs(project_id: int, limit: int = Query(100, ge=1, le=500),
+              offset: int = Query(0, ge=0), user=Depends(_proj_viewer)):
     conn = get_db()
     rows = conn.execute("""
         SELECT tr.*, tg.name AS group_name
         FROM test_runs tr
         LEFT JOIN test_groups tg ON tr.group_id = tg.id
-        WHERE tr.project_id=? ORDER BY tr.started_at DESC, tr.id DESC LIMIT 100
-    """, (project_id,)).fetchall()
+        WHERE tr.project_id=? ORDER BY tr.started_at DESC, tr.id DESC LIMIT ? OFFSET ?
+    """, (project_id, limit, offset)).fetchall()
     conn.close()
     result = rows_to_list(rows)
     # Merge in-memory live state
@@ -3296,6 +3314,10 @@ def get_run(run_id: str, include_items: bool = False, user=Depends(_current_user
     conn.close()
 
     d = dict(tr)
+    queued = [key for key, state in _active_runs.items() if state["status"] == "queued"]
+    d["queue_position"] = queued.index(run_id) + 1 if run_id in queued else None
+    d["slots_busy"] = sum(state["status"] == "running" for state in _active_runs.values())
+    d["slots_total"] = MAX_CONCURRENT_RUNS
     live = _active_runs.get(run_id)
     if live:
         d["status"] = live["status"]
@@ -3532,7 +3554,7 @@ async def stream_run_events(run_id: str, request: Request, token: str = "",
         raise HTTPException(401, "Not authenticated")
     try:
         payload = jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        who = {"username": payload["sub"], "role": payload.get("role", "user")}
+        who = await asyncio.to_thread(_authenticate, raw)
     except JWTError:
         raise HTTPException(401, "Invalid or expired token")
 
@@ -3668,11 +3690,13 @@ RESULTS_COOKIE = "brace_results"
 
 @app.post("/api/auth/logout")
 def logout(user=Depends(_current_user)):
-    """Drop the results cookie. The JWT itself is discarded by the browser.
+    """Revoke account sessions and drop the results cookie.
 
     Without this the cookie outlives the session, and on a shared machine the
     next person could still open the previous user's run reports by URL.
     """
+    with database() as conn:
+        conn.execute("UPDATE users SET session_version=session_version+1 WHERE username=?", (user["username"],))
     resp = Response(status_code=204)
     resp.delete_cookie(RESULTS_COOKIE, path="/results")
     return resp
@@ -3694,7 +3718,7 @@ async def serve_result(project_id: int, run_id: str, subpath: str,
         raise HTTPException(401, "Not authenticated")
     try:
         payload = jwt.decode(raw, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user = {"username": payload["sub"], "role": payload.get("role", "user")}
+        user = await asyncio.to_thread(_authenticate, raw)
     except JWTError:
         raise HTTPException(401, "Invalid token")
     role = _get_project_role(project_id, user["username"], user["role"])

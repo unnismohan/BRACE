@@ -226,7 +226,7 @@ async function doLogin() {
                     + 'If there is a proxy in front of BRACE, check it is not '
                     + 'rewriting the response.');
     }
-    _token = r.access_token; _user = { username: r.username, role: r.system_role };
+    _token = r.access_token; _user = { username: r.username, role: r.system_role, must_change_password: r.must_change_password };
     localStorage.setItem('brace_token', _token);
     localStorage.setItem('brace_user', JSON.stringify(_user));
     afterLogin(r);
@@ -253,7 +253,7 @@ function afterLogin(r) {
   } else {
     document.getElementById('btn-new-proj').style.display  = 'none';
   }
-  if (r.must_change_password) showModal('modal-changepw');
+  if (r.must_change_password) { showModal('modal-changepw'); return; }
   loadProjects();
   showView('dashboard');
 }
@@ -273,7 +273,12 @@ function logout() {
 
 async function changePassword() {
   try {
-    await api('PUT', '/auth/change-password', { old_password: document.getElementById('cpw-old').value, new_password: document.getElementById('cpw-new').value });
+    const result = await api('PUT', '/auth/change-password', { old_password: document.getElementById('cpw-old').value, new_password: document.getElementById('cpw-new').value });
+    _token = result.access_token;
+    _user.must_change_password = false;
+    localStorage.setItem('brace_user', JSON.stringify(_user));
+    localStorage.setItem('brace_token', _token);
+    loadProjects(); showView('dashboard');
     toast('Password updated', 's'); closeModal('modal-changepw');
     document.getElementById('cpw-old').value = ''; document.getElementById('cpw-new').value = '';
   } catch(e) { toast(e.message, 'e'); }

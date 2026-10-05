@@ -4,6 +4,7 @@ BRACE v2 — SQLite database layer
 import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -63,10 +64,17 @@ class _PwdContext:
         return bcrypt.hashpw(secret.encode(), bcrypt.gensalt()).decode()
 
     def verify(self, secret: str, hashed: str) -> bool:
-        return bcrypt.checkpw(secret.encode(), hashed.encode())
+        try:
+            return bcrypt.checkpw(secret.encode(), hashed.encode())
+        except ValueError:
+            return False
 
 
 pwd_context = _PwdContext()
+
+
+def encryption_available() -> bool:
+    return _fernet is not None
 
 
 # ── Connection factory ───────────────────────────────────────────
@@ -78,6 +86,17 @@ def get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=10000")
     return conn
+
+
+@contextmanager
+def database():
+    """Commit successful transactions, roll back failures, always close."""
+    conn = get_db()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 # ── Schema ───────────────────────────────────────────────────────
@@ -365,6 +384,10 @@ def init_db():
     # by (runs x cases) so the scan gets expensive without an index.
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_tc_code ON test_run_items(tc_code)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_items_tcid    ON test_run_items(test_case_id)")
+    conn.commit()
+
+    _add_column(c, "users", "session_version", "INTEGER NOT NULL DEFAULT 0")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_runs_project_started ON test_runs(project_id, started_at DESC, id DESC)")
     conn.commit()
 
     # Migrate old role → system_role

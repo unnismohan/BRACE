@@ -231,8 +231,8 @@ every timestamp in the UI will be offset by the same amount.
 | `BRACE_ADMIN_PASSWORD` | Optional. Seeds the bootstrap `admin` password on a **fresh database only**. Omit and the account is created as `admin`/`admin` with a forced change at first login. |
 | `RMQ_PASSWORD` | Optional. Only used by the agent1 RCA listener, which the controller does not run — omit it unless you deploy that listener. |
 
-A malformed `BRACE_ENCRYPT_KEY` does not crash the pod — it logs `SECURITY: … will be stored in
-PLAIN TEXT` and continues. Grep for that after any secret change.
+A missing or malformed `BRACE_ENCRYPT_KEY` prevents production startup. Local/dev
+environments may continue with a warning; never use that bypass in production.
 
 ### Environment (set in `k8s/deployment.yaml`)
 
@@ -682,8 +682,8 @@ Scan-related config lives in `.trivyignore` and `.grype.yaml`.
 intentional — do not work around it with `BSS_ENV=local`.
 
 **`SECURITY: BRACE_ENCRYPT_KEY is set but invalid`**
-The key is not url-safe base64 of exactly 32 bytes. Secrets are being stored in **plain text**.
-Regenerate with `gen-secret.sh` and re-enter each project's git token.
+The key is not url-safe base64 of exactly 32 bytes. Production startup is refused.
+Restore the correct encryption key; preserve the existing key for an existing database.
 
 **Chrome fails with `session not created`**
 Xvfb did not start. Check the startup log for `Starting Xvfb on :99`. If tests fail only under
@@ -744,6 +744,11 @@ Runs fail to write artefacts. Prune via Danger Zone or expand the PVC, then aler
 `brace_results_disk_bytes` so it does not recur.
 
 ---
+
+## Improvement documentation
+
+See [the improvement log](docs/improvements.md) for change-by-change behavior,
+upgrade notes, validation evidence, and remaining implementation work.
 
 ## Repository layout
 

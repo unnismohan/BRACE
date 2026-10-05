@@ -348,6 +348,7 @@ function renderRunHead(r) {
   const html = `
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
       <span class="sbadge ${r.status}">${r.status}</span>
+      ${r.queue_position ? `<span style="font-size:12px">Queue position: <b>${r.queue_position}</b> · ${r.slots_busy}/${r.slots_total} run slots busy</span>` : ''}
       <span style="font-size:12px">By: <b>${esc(r.triggered_by||'—')}</b></span>
       <span style="font-size:12px">✓ ${r.passed} &nbsp; ✗ ${r.failed} &nbsp; / ${r.total}</span>
       ${r.rerun_of?`<span style="font-size:12px;color:var(--c-muted)">re-run of <a href="#" onclick="viewRunDetail(${jsArg(r.rerun_of)});return false">${esc(r.rerun_of)}</a></span>`:''}

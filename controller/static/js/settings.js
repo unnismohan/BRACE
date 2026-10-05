@@ -74,7 +74,9 @@ const HELP_SECTIONS = [
   <h4>Signing in</h4>
   <p>Use the username and password your administrator issued. On a brand-new
   installation the first account is <code>admin</code>; if it still has its initial
-  password you are asked to change it before continuing.</p>
+  password you must change it before continuing. New passwords need at least 12 characters
+  and at most 72 UTF-8 bytes. Password changes and administrator resets revoke previous sessions;
+  signing out revokes all sessions for your account.</p>
   <h4>How work is organised</h4>
   <table><thead><tr><th>Term</th><th>What it is</th></tr></thead><tbody>
     <tr><td><b>Project</b></td><td>A workspace with its own scripts, test cases, runs and members. Nothing is shared between projects.</td></tr>

@@ -18,6 +18,7 @@ Three rules make this safe to run repeatedly:
      as one test removed and a different one added, which is also the honest
      interpretation of what a file diff shows.
 """
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -45,9 +46,9 @@ def _is_testcase_file(rel: str) -> bool:
 # Parsing is the expensive half of a sync: measured at 49s for 3,832 tests
 # across a real repository, almost all of it inside Robot's parser. A sync
 # normally follows a git pull that touched a handful of files, so results are
-# cached per file and only re-parsed when its mtime or size changes. First sync
+# cached per file and only re-parsed when its content hash changes. First sync
 # still pays full price; every one after it is near-instant.
-_parse_cache: dict = {}          # abs path -> (mtime, size, [tests])
+_parse_cache: dict = {}          # abs path -> (sha256, size, [tests])
 _CACHE_MAX = 20000               # bound it; a pathological repo must not leak
 
 
@@ -79,7 +80,7 @@ def parse_repo(root: Path, testcase_dirs_only: bool = True) -> tuple:
         seen_paths.add(key)
         try:
             st = path.stat()
-            stamp = (st.st_mtime_ns, st.st_size)
+            stamp = (hashlib.sha256(path.read_bytes()).hexdigest(), st.st_size)
         except OSError as exc:
             errors.append(f"{rel}: {exc}")
             continue
@@ -119,7 +120,7 @@ def parse_repo(root: Path, testcase_dirs_only: bool = True) -> tuple:
 
     # Drop entries for files that no longer exist, so a long-lived process does
     # not hold parsed results for a repo layout that changed underneath it.
-    for gone in [k for k in _parse_cache if k not in seen_paths and k.startswith(str(root))]:
+    for gone in [k for k in _parse_cache if k not in seen_paths and Path(k).is_relative_to(root)]:
         _parse_cache.pop(gone, None)
     return tests, errors
 
