@@ -159,3 +159,5 @@ Docker and Podman executables are absent. The production validation harness is
 implemented; its successful result must be recorded on a Docker-capable host.
 
 Shell entrypoints have enforced LF endings in .gitattributes so a Windows checkout remains runnable in the Linux image.
+
+The Compose controller publishes `0.0.0.0:8080:8080` for access through WSL and host network interfaces. The runner port remains internal.
