@@ -173,3 +173,7 @@ Docker startup fixes: the optimized image explicitly installs `xorg-x11-server-X
 - Empty run-picker pages display `0–0 of 0`. Frontend cache versions advance so rebuilt images serve the updated scripts.
 
 Validation: frontend syntax checks and overview Python compilation pass. Changes were reviewed in a disposable local UI with 125 cases; the running Docker deployment needs an image rebuild to receive them.
+
+2026-10-06 overview redesign: replaced the wide shared metric block with six individual cards with contextual labels and icons. Recent failures use separated, keyboard-accessible rows that open run details; schedules occupy a side panel with a useful empty state. A coverage panel explains the percentage of cases with any recorded execution, without presenting it as a pass rate. Added refresh, run-list and testcase-list navigation, loading state and retry-on-error controls. Responsive layouts use six, three or two metric columns and stack the activity panels at narrower widths. Styling uses existing light/dark theme tokens and sprite icons, with no new dependencies or API changes. Frontend cache versions advance to `20261006-1`.
+
+Validation: local browser review at desktop and narrow widths, light and dark themes; no overview horizontal overflow at 390px or browser console errors. Refresh, failure-row navigation, view-runs and view-testcases actions verified. JavaScript syntax and Git whitespace checks pass. Preview screenshot uses disposable local data; rebuild the Docker image to deploy this redesign.
