@@ -1,0 +1,49 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.14",
+  "rows": {
+    "cases": 10000,
+    "runs": 2000,
+    "items_in_summary_run": 1200,
+    "groups": 1000,
+    "group_members": 19990
+  },
+  "repeats": 20,
+  "cases_page_50": {
+    "median_ms": 2.384,
+    "p95_ms": 3.519,
+    "response_bytes": 17034
+  },
+  "groups_page_50": {
+    "median_ms": 7.012,
+    "p95_ms": 9.922,
+    "response_bytes": 9096
+  },
+  "cases_search": {
+    "median_ms": 6.345,
+    "p95_ms": 7.896,
+    "response_bytes": 17229
+  },
+  "runs_page_50": {
+    "median_ms": 2.474,
+    "p95_ms": 3.175,
+    "response_bytes": 17315
+  },
+  "summary_only": {
+    "median_ms": 4.484,
+    "p95_ms": 6.034,
+    "response_bytes": 614
+  },
+  "summary_with_items": {
+    "median_ms": 10.149,
+    "p95_ms": 11.366,
+    "response_bytes": 510898
+  },
+  "parser_cold_ms": 538.861,
+  "parser_warm": {
+    "median_ms": 23.473,
+    "p95_ms": 25.617,
+    "response_bytes": 12076
+  },
+  "scope": "In-process SQLite/serialization and parsing; excludes HTTP, Chrome, remote transfer and concurrent production load."
+}

@@ -1224,3 +1224,5 @@ body.compact .rd-bar{padding:6px 0 7px}
 .nt-check input{width:auto}
 .nt-hint{color:var(--c-muted);font-size:var(--fs-xs)}
 [hidden] { display: none !important; }
+
+.list-pager{display:flex;gap:12px;align-items:center;padding:12px;flex-wrap:wrap}.overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px}.overview-grid strong{font-size:24px}

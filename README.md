@@ -649,7 +649,7 @@ Enforced in the deployment:
   against the project directory.
 - Project membership is checked per request; cross-project IDs are rejected rather than trusted.
 - Project roles are `viewer` / `tester` / `project_admin`, mapped to capabilities
-  (`view` / `run` / `edit` / `manage`) in one place — `ROLE_CAPS` in `controller/main.py`. A
+  (`view` / `run` / `edit` / `manage`) in one place — `ROLE_CAPS` in `controller/authentication.py`. A
   **Viewer** can read everything and change nothing: the UI hides the controls and opens scripts
   read-only, and the server refuses them regardless of what the browser sends.
 - At startup the app walks its own route table and logs an error for any mutating `/api/` route
@@ -754,7 +754,12 @@ upgrade notes, validation evidence, and remaining implementation work.
 
 ```
 controller/              FastAPI backend + SPA
-  main.py                API, execution engine, security
+  main.py                App composition and lifecycle
+  authentication.py      Authentication and project authorization
+  execution_engine.py    Run orchestration and retry tracking
+  execution.py           Fair admission and process limits
+  reporting.py           Failure/artifact extraction
+  routes/                Resource-specific API handlers
   db.py                  SQLite schema and idempotent migrations
   scheduler.py           APScheduler wrapper, cron parsing
   mailer.py              SMTP transport, provider presets, email templates
@@ -796,3 +801,7 @@ Good first issues: screenshots for this README, a test suite, and
 ## Licence
 
 [Apache-2.0](LICENSE).
+
+### Profiles, retries and isolated runners
+
+BRACE now provides project environment profiles, per-project fair queueing, explicit retry history and quarantine, server pagination and a project overview. See the [execution and module guide](docs/execution-and-modules.md) for usage, secure per-project workers, compatibility and reproducible validation. Production Docker/Chrome validation remains unverified on the development workstation.

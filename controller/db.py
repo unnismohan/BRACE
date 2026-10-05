@@ -391,7 +391,27 @@ def init_db():
     _add_column(c, "projects", "last_git_commit", "TEXT")
     _add_column(c, "test_runs", "git_commit", "TEXT")
     _add_column(c, "test_run_items", "source_path", "TEXT")
+    conn.execute("""CREATE TABLE IF NOT EXISTS environment_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, environment TEXT NOT NULL DEFAULT '{}',
+        variables TEXT NOT NULL DEFAULT '{}', secret_variables TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1)""")
+    _add_column(c, "test_runs", "profile_snapshot", "TEXT")
+    _add_column(c, "test_runs", "profile_secrets", "TEXT")
+    _add_column(c, "test_runs", "retry_limit", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(c, "test_cases", "quarantined", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(c, "test_cases", "quarantine_reason", "TEXT")
+    _add_column(c, "test_run_items", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(c, "test_run_items", "passed_after_retry", "INTEGER NOT NULL DEFAULT 0")
+    conn.execute("""CREATE TABLE IF NOT EXISTS test_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL REFERENCES test_run_items(id) ON DELETE CASCADE,
+        attempt INTEGER NOT NULL,status TEXT NOT NULL,duration_sec REAL NOT NULL,
+        artifact_dir TEXT NOT NULL, UNIQUE(item_id,attempt))""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_runs_project_started ON test_runs(project_id, started_at DESC, id DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tc_project_code ON test_cases(project_id,tc_code,id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_items_run_status ON test_run_items(run_id,status,id)")
     conn.commit()
 
     # Migrate old role → system_role

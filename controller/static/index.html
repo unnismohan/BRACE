@@ -6,7 +6,7 @@
 <title>BRACE — RF Test Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/brace.css?v=20261005">
+<link rel="stylesheet" href="/static/css/brace.css?v=20261005-2">
 <script>
   /* Applied before first paint so a dark-theme user never sees a white flash.
      core.js re-applies the same value once it loads; this is only the head start. */
@@ -264,6 +264,7 @@
       <div id="role-note" class="role-note" style="display:none"></div>
 
       <div id="proj-tabs">
+        <button class="tab-btn" onclick="switchTab('overview')" id="tabt-overview">Overview</button>
         <button class="tab-btn active" onclick="switchTab('scripts')"  id="tabt-scripts">Scripts</button>
         <button class="tab-btn"        onclick="switchTab('cases')"    id="tabt-cases">Test Cases</button>
         <button class="tab-btn"        onclick="switchTab('groups')"   id="tabt-groups">Suites</button>
@@ -274,6 +275,7 @@
       </div>
 
       <!-- SCRIPTS -->
+      <div class="tab-pane" id="tab-overview"><div id="project-overview" aria-live="polite"></div></div>
       <div class="tab-pane active" id="tab-scripts" style="padding-top:8px">
         <input type="file" id="upload-inp" style="display:none" multiple accept=".robot,.yaml,.yml,.txt,.py,.resource,.csv,.xlsx,.zip" onchange="uploadFiles(this)">
         <div id="editor-wrap">
@@ -619,7 +621,7 @@
             <button class="set-navi danger" id="snav-danger" onclick="switchSettings('danger')"><svg class="i" aria-hidden="true" focusable="false"><use href="#i-warn"/></svg><span>Danger Zone</span></button>
           </nav>
 
-          <section class="set-pane" id="spane-general">
+          <section class="set-pane" id="spane-general"><div class="asection"><h3>Environment profiles</h3><p>Variables go to Robot. Secret values are encrypted and are never shown again here.</p><div id="profiles-list"></div><button data-cap="manage" class="btn btn-o" onclick="Operations.editProfile()">Add profile</button></div>
           <div class="asection">
             <h3>Project Info</h3>
             <div class="fr"><label>Name</label><input id="s-name" type="text"></div>
@@ -1119,7 +1121,7 @@
     </div>
     <div class="fr"><label>Extra Args</label><input id="run-xargs" type="text" placeholder="--variable ENV:staging"></div>
     <div class="fr">
-      <label for="run-parallel">Parallel</label>
+      <label for="run-profile">Environment profile</label><select id="run-profile"><option value="">Default</option></select></div><div class="fr"><label for="run-retries">Retries after failure</label><input id="run-retries" type="number" min="0" max="2" value="0"><p class="fhint">Attempts are preserved; a later pass is marked as flaky. Retrying repeats test side effects.</p><label><input id="run-quarantine" type="checkbox"> Include quarantined cases</label></div><div class="fr"><label for="run-parallel">Parallel</label>
       <input id="run-parallel" type="number" min="1" step="1">
       <!-- Set to 1 when a suite's cases depend on each other's order. -->
       <div class="fhint" id="run-parallel-hint"></div>
@@ -1340,13 +1342,14 @@
 
 <!-- Classic scripts, no modules and no build step (air-gapped runtime).
      They share one global scope and run in this order — do not reorder. -->
-<script src="/static/js/core.js"></script>
-<script src="/static/js/scripts.js"></script>
-<script src="/static/js/testcases.js"></script>
-<script src="/static/js/runs.js"></script>
-<script src="/static/js/settings.js"></script>
-<script src="/static/js/admin.js"></script>
-<script src="/static/js/ui.js"></script>
-<script src="/static/js/boot.js"></script>
+<script src="/static/js/core.js?v=20261005-3"></script>
+<script src="/static/js/scripts.js?v=20261005-3"></script>
+<script src="/static/js/testcases.js?v=20261005-3"></script>
+<script src="/static/js/runs.js?v=20261005-3"></script>
+<script src="/static/js/settings.js?v=20261005-3"></script>
+<script src="/static/js/admin.js?v=20261005-3"></script>
+<script src="/static/js/ui.js?v=20261005-3"></script>
+<script src="/static/js/operations.js?v=20261005-3"></script>
+<script src="/static/js/boot.js?v=20261005-3"></script>
 </body>
 </html>

@@ -1,0 +1,51 @@
+# Production image is shared; worker overrides entrypoint and gets no controller volumes.
+services:
+  controller:
+    image: ${BRACE_IMAGE:-brace:isolated}
+    build:
+      context: .
+      dockerfile: Dockerfile.optimized
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      BSS_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?Set a strong JWT_SECRET}
+      BRACE_ENCRYPT_KEY: ${BRACE_ENCRYPT_KEY:?Set a Fernet key}
+      BRACE_ADMIN_PASSWORD: ${BRACE_ADMIN_PASSWORD:?Set bootstrap password}
+      BRACE_RUNNER_MODE: remote
+      BRACE_REQUIRE_ISOLATION: "true"
+      BRACE_RUNNER_ENDPOINTS: '{"${BRACE_RUNNER_PROJECT_ID:-1}":{"url":"http://runner:8090","token":"${BRACE_RUNNER_TOKEN:?Set a runner token of at least 32 characters}"}}'
+      CONFIG_DIR: /opt/rf/config
+      SUITES_DIR: /opt/rf/suites
+      RESULTS_DIR: /opt/rf/results
+    volumes: ["config:/opt/rf/config", "sources:/opt/rf/suites", "results:/opt/rf/results"]
+    networks: [runner_net, controller_net]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+  runner:
+    image: ${BRACE_IMAGE:-brace:isolated}
+    entrypoint: ["/bin/bash", "/opt/rf/controller/entrypoint-runner.sh"]
+    environment:
+      BRACE_RUNNER_PROJECT_ID: ${BRACE_RUNNER_PROJECT_ID:-1}
+      BRACE_RUNNER_TOKEN: ${BRACE_RUNNER_TOKEN:?Set runner token}
+      BRACE_RUNNER_CAPACITY: "3"
+      BRACE_RUNNER_WORK_DIR: /tmp
+    # No database, source PVC, controller credentials, or Docker socket.
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,size=512m", "/dev/shm:rw,nosuid,size=256m"]
+    networks: [runner_net]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    expose: ["8090"]
+networks:
+  runner_net:
+    internal: true
+  controller_net: {}
+volumes:
+  config: {}
+  sources: {}
+  results: {}

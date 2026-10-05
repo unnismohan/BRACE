@@ -219,7 +219,7 @@ async function loadSchedules() {
   }
 }
 
-function openSchedModal(raw) {
+async function openSchedModal(raw) {
   const s = typeof raw === 'string' ? JSON.parse(raw) : null;
   _schedEditId = s ? s.id : null;
   document.getElementById('sched-title').textContent = s ? 'Edit Schedule' : 'New Schedule';
@@ -227,6 +227,8 @@ function openSchedModal(raw) {
   sel.innerHTML = _groups.length
     ? _groups.map(g => `<option value="${g.id}" ${s && s.group_id===g.id?'selected':''}>${esc(g.name)} (${g.tc_count} TCs)</option>`).join('')
     : '<option value="">— no suites yet —</option>';
+  if(!s) await GroupPicker.attach('sched-group');
+  else {sel.innerHTML='';const option=document.createElement('option');option.value=s.group_id;option.textContent=s.group_name||'Scheduled suite';sel.appendChild(option);document.getElementById('suite-picker-sched-group')?.remove();}
   document.getElementById('sched-cron').value = s ? s.cron_expr : '0 2 * * *';
   document.getElementById('sched-enabled').checked = s ? !!s.enabled : true;
   document.getElementById('sched-overlap').value = s ? (s.overlap_policy || 'queue') : 'skip';
@@ -873,14 +875,10 @@ async function testAIConfig() {
 // of re-fetching /users on every keystroke.
 let _users = [];
 
-async function loadUsers() {
-  try {
-    _users = await api('GET','/users');
-    renderUsers();
-  } catch(e) { toast(e.message,'e'); }
-}
+async function loadUsers() { return UserList.load(); }
 
-function renderUsers() {
+function renderUsers(fromServer=false) {
+  if(!fromServer) {UserList.offset=0;clearTimeout(UserList.timer);UserList.timer=setTimeout(()=>UserList.load(),200);return;}
   const tbody=document.getElementById('users-tbody');
   if (!tbody) return;
   const q=(document.getElementById('users-search')?.value||'').trim().toLowerCase();

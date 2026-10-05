@@ -102,15 +102,7 @@ async function openNewTCModal() {
   showModal('modal-newtc');
 }
 
-async function loadTCs() {
-  try {
-    _tcs = await api('GET', `/projects/${_curProj.id}/test-cases`);
-    _tcPicked.clear();            // ids may no longer exist after a reload
-    renderTCs();
-    onChkChange();
-  }
-  catch(e) { toast(e.message,'e'); }
-}
+async function loadTCs() { return Lists.load('cases'); }
 
 function tcClearFilters() {
   document.getElementById('tc-search').value = '';
@@ -129,7 +121,7 @@ function tcTagList(tc) {
 function syncTCTagFilter() {
   const sel = document.getElementById('tc-tag');
   if (!sel) return;
-  const names = [...new Set(_tcs.flatMap(tcTagList))].sort();
+  const names = Lists.tags;
   if (sel.dataset.names === names.join(' ')) return;
   sel.dataset.names = names.join(' ');
   const cur = sel.value;
@@ -142,7 +134,8 @@ function syncTCTagFilter() {
   sel.value = names.includes(cur) ? cur : '';
 }
 
-function renderTCs() {
+function renderTCs(fromServer=false) {
+  if (!fromServer) return Lists.changed('cases');
   const tbody = document.getElementById('tc-tbody');
   const q      = (document.getElementById('tc-search')?.value || '').trim().toLowerCase();
   const status = document.getElementById('tc-status')?.value || '';
@@ -177,7 +170,7 @@ function renderTCs() {
       <td><input type="checkbox" class="tc-chk" data-id="${tc.id}" ${_tcPicked.has(tc.id)?'checked':''} onchange="tcToggle(${tc.id},this.checked)"></td>
       <td data-label="Code"><span class="tc-code">${esc(tc.tc_code||'—')}</span></td>
       <td data-label="Name" class="tc-name-cell" title="${esc(suiteTitle)}">
-        ${esc(tc.name)}${tc.suite_path?'<span class="tc-suite-dot" title="'+esc(suiteTitle)+'">'+ico('link')+'</span>':''}${tcSourceBadge(tc)}
+        ${esc(tc.name)}${tc.quarantined?'<span class="sbadge failed" title="'+esc(tc.quarantine_reason)+'">Quarantined</span>':''}${tc.suite_path?'<span class="tc-suite-dot" title="'+esc(suiteTitle)+'">'+ico('link')+'</span>':''}${tcSourceBadge(tc)}
       </td>
       <td data-label="Description" class="tc-desc-cell" title="${esc(tc.description||'')}">${esc(tc.description||'—')}</td>
       <td data-label="Tags">${tcTagList(tc).map(t =>
@@ -187,6 +180,7 @@ function renderTCs() {
       <td><div class="bgrp">
         <button data-cap="run"  class="bico" onclick="quickRunTC(${tc.id})" title="Run">${ico('run')}</button>
         <button class="bico" onclick="openTCHistory(${tc.id})" title="Execution history">${ico('clock')}</button>
+        <button data-cap="edit" class="btn btn-sm btn-o" onclick="Operations.quarantine(${tc.id})">${tc.quarantined?'Restore':'Quarantine'}</button>
         <button data-cap="edit" class="bico" onclick="editTC(${tc.id})"    title="Edit">${ico('edit')}</button>
         <button data-cap="manage" class="bico" onclick="deleteTC(${tc.id})"  title="Delete">${ico('trash')}</button>
       </div></td>`;
@@ -312,15 +306,17 @@ function runSelectedTCs() {
 }
 
 // ── Per-test-case history ──────────────────────────────
-async function openTCHistory(tcId) {
+async function openTCHistory(tcId,offset=0) {
   document.getElementById('tch-title').textContent = 'Test Case History';
   document.getElementById('tch-stats').innerHTML = '<div class="picker-empty">Loading…</div>';
   document.getElementById('tch-strip-wrap').style.display = 'none';
   document.getElementById('tch-rows').innerHTML = '';
   showModal('modal-tchist');
   try {
-    const d = await api('GET', `/test-cases/${tcId}/history?limit=50`);
+    const d = await api('GET', `/test-cases/${tcId}/history?limit=50&offset=${offset}`);
     renderTCHistory(d);
+    let pager=document.getElementById('history-pages');if(!pager){pager=document.createElement('div');pager.id='history-pages';pager.className='list-pager';document.getElementById('tch-rows').insertAdjacentElement('afterend',pager);}
+    pager.innerHTML=`<button class="btn btn-o btn-sm" ${offset===0?'disabled':''} onclick="openTCHistory(${tcId},${Math.max(0,offset-50)})">Previous</button> ${d.total?offset+1:0}–${Math.min(offset+50,d.total)} of ${d.total} · Statistics reflect this page <button class="btn btn-o btn-sm" ${offset+50>=d.total?'disabled':''} onclick="openTCHistory(${tcId},${offset+50})">Next</button>`;
   } catch(e) {
     document.getElementById('tch-stats').innerHTML =
       `<div class="picker-empty">Could not load history — ${esc(e.message)}</div>`;
@@ -333,7 +329,7 @@ function renderTCHistory(d) {
 
   if (!s.executions) {
     document.getElementById('tch-stats').innerHTML =
-      '<div class="picker-empty">This test case has never been executed.</div>';
+      '<div class="picker-empty">This page has no completed executions.</div>';
     document.getElementById('tch-rows').innerHTML = '';
     return;
   }
@@ -352,8 +348,8 @@ function renderTCHistory(d) {
   // The verdict line — this is the point of the whole feature
   let banner = '';
   if (s.streak_status === 'failed' && s.streak === s.executions && s.executions > 2) {
-    banner = `<div class="tch-banner err"><b>Never passed.</b> Failed all
-      ${s.executions} recorded runs — likely a broken test or an unimplemented feature,
+    banner = `<div class="tch-banner err"><b>No passes on this page.</b> Failed all
+      ${s.executions} runs on this page — likely a broken test or an unimplemented feature,
       rather than a regression.</div>`;
   } else if (s.streak_status === 'failed' && s.failing_since) {
     banner = `<div class="tch-banner err"><b>Failing since
@@ -362,7 +358,7 @@ function renderTCHistory(d) {
       changed around that date.</div>`;
   } else if (s.passed && s.failed) {
     banner = `<div class="tch-banner warn"><b>Inconsistent.</b> ${s.passed} passed /
-      ${s.failed} failed across ${s.executions} runs — treat results from this case
+      ${s.failed} failed across ${s.executions} runs on this page — treat results from this case
       with caution until it is stabilised.</div>`;
   } else if (s.streak_status === 'passed') {
     banner = `<div class="tch-banner ok"><b>Stable.</b> ${s.streak} consecutive pass(es).</div>`;
@@ -407,10 +403,7 @@ async function rerunFailed(runId) {
 }
 
 // ── Groups ─────────────────────────────────────────────
-async function loadGroups() {
-  try { _groups = await api('GET', `/projects/${_curProj.id}/groups`); renderGroups(); }
-  catch(e) { toast(e.message,'e'); }
-}
+async function loadGroups() { return GroupList.load(); }
 
 let _grpOpen = {};   // group id → expanded? (collapsed by default)
 
@@ -424,8 +417,8 @@ function renderGroups() {
   document.getElementById('grp-toolbar').style.display = 'flex';
 
   list.innerHTML = _groups.map(g => {
-    const passC = g.test_cases.filter(t=>t.last_run_status==='passed').length;
-    const failC = g.test_cases.filter(t=>t.last_run_status==='failed').length;
+    const passC = g.passed_count||0;
+    const failC = g.failed_count||0;
     const open  = _grpOpen[g.id] === true;
     return `
     <div class="rcard">
@@ -451,18 +444,21 @@ function renderGroups() {
             ${tc.last_run_status?`<span class="sbadge ${tc.last_run_status}">${tc.last_run_status}</span>`:''}
             <button class="bico" onclick="rmTCFromGroup(${g.id},${tc.id})" title="Remove">${ico('stop')}</button>
           </div>`).join('') : '<div style="color:var(--c-muted);font-size:12px">No test cases added yet.</div>'}
+        ${GroupList.memberPager(g)}
       </div>
     </div>`;
   }).join('');
 }
 
-function toggleGroup(gid) {
+async function toggleGroup(gid) {
   _grpOpen[gid] = !_grpOpen[gid];
+  if(_grpOpen[gid]) await GroupList.members(gid);
   renderGroups();
 }
 
-function expandAllGroups(open) {
+async function expandAllGroups(open) {
   _groups.forEach(g => { _grpOpen[g.id] = open; });
+  if(open) for(const group of _groups) await GroupList.members(group.id);
   renderGroups();
 }
 
@@ -485,15 +481,15 @@ async function deleteGroup(id) {
 let _grpAvail = [];        // TCs not yet in the suite
 let _grpPicked = new Set();  // survives filtering, so a search can't lose a tick
 
-function openGrpTCModal(gid) {
+async function openGrpTCModal(gid) {
   _grpId = gid;
   _grpPicked = new Set();
   const g = _groups.find(x=>x.id===gid);
   document.getElementById('grptcs-title').textContent = `Add TCs to "${g?.name || ''}"`;
   document.getElementById('grptc-search').value = '';
   const existIds = new Set(g?.test_cases.map(t=>t.id)||[]);
-  _grpAvail = _tcs.filter(tc=>!existIds.has(tc.id));
-  renderGrpTCList();
+  Lists.reset('group');
+  await Lists.load('group');
   showModal('modal-grptcs');
 }
 
@@ -504,7 +500,8 @@ function grpTCVisible() {
                                      (tc.tc_code||'').toLowerCase().includes(q));
 }
 
-function renderGrpTCList() {
+function renderGrpTCList(fromServer=false) {
+  if (!fromServer) return Lists.changed('group');
   const list = document.getElementById('grptc-list');
   const vis = grpTCVisible();
   if (!_grpAvail.length) {

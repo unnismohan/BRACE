@@ -13,7 +13,7 @@
 // which throws during parse and leaves this const permanently uninitialised.
 // Wrapping defers the lookup to call time, when the whole bundle is present.
 const SETTINGS_PANES = {
-  general: () => {},                       // its fields are filled by loadSettings
+  general: () => Operations.profiles(),                       // its fields are filled by loadSettings
   git:     () => { loadGitConfig(); loadSyncConfig(); },
   schedules: () => {
     // The schedule dialog picks a suite from _groups, which is only populated
@@ -68,6 +68,14 @@ const R = { v:'<span class="help-role v">Viewer</span>',
             sa:'<span class="help-role sa">System Admin</span>' };
 
 const HELP_SECTIONS = [
+{ id:'operations', title:'Profiles, Retries & Quarantine', body:`
+  <p>Overview shows project coverage, queues, recent failures, upcoming schedules and passes after retry.</p>
+  <h4>Environment profiles</h4><p>Project administrators configure profiles in Settings → General. Select a profile in the Run dialog. Variables are passed to Robot; secret values are encrypted and reads show only their names. Editing keeps secrets unless their names are entered in Secret names to remove. Use testing credentials: scripts can read and print selected secrets.</p>
+  <h4>Retries</h4><p>Choose 0, 1 or 2 retries. A retry repeats the whole Robot file and its side effects. A later pass is marked Flaky pass, and expanding its item shows all attempt logs. Reports also include passes after retry in the flaky list.</p>
+  <h4>Quarantine</h4><p>Quarantine a case with a reason from its row. Normal manual and scheduled runs exclude it. Include quarantined cases in a manual diagnostic run, or Restore it when fixed.</p>
+  <h4>Pagination and filters</h4><p>Cases, runs, user administration, history and case pickers have pages. Search cases/runs/users across all matching rows. Filters persist by account and project; case selections survive page changes and reset when changing project. History statistics apply to the displayed page.</p>
+  <h4>Fair execution</h4><p>Free run slots are shared across projects. Each project's own submissions stay in order, but a large backlog cannot permanently precede other projects. Queued totals are shown; exact waiting times depend on currently running work.</p>
+`},
 { id:'start', title:'Getting Started', body:`
   <p class="help-lead">BRACE runs your Robot Framework test suites, stores the results,
   and shows you what passed, what failed, and why.</p>

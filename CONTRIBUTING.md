@@ -33,7 +33,13 @@ python -m uvicorn main:app --reload --port 8080
 
 ```
 controller/
-  main.py        API, execution engine, auth, security  (single module by design)
+  main.py        App composition, lifecycle and static UI
+  authentication.py  Auth and project authorization
+  execution_engine.py  Run and retry orchestration
+  execution.py   Fair admission and process limits
+  reporting.py   Artifact/failure extraction
+  runtime.py     Shared configuration and live state
+  routes/        Resource-specific HTTP handlers
   db.py          SQLite schema + idempotent migrations
   scheduler.py   APScheduler wrapper, cron parsing
   mailer.py      SMTP transport and email templates
@@ -119,3 +125,5 @@ the run's console log is usually the fastest route to a diagnosis.
 ## Security issues
 
 Please do not open a public issue. See [SECURITY.md](SECURITY.md).
+
+See [execution and modules](docs/execution-and-modules.md) for ownership, runner deployment, profiles/retries, benchmarks and production checks. Preserve the API contract and update the change log with every behavior change.

@@ -230,6 +230,7 @@ const ModalUX = {
   },
   close(id) {
     if (id === 'modal-changepw' && _user?.must_change_password) return;
+    if(id==='modal-profile') document.getElementById('profile-secrets').value='';
     document.getElementById(id).classList.remove('open');
     this.stack = this.stack.filter(value => value !== id);
     const previous = this.focus.get(id);
@@ -407,6 +408,7 @@ function showDashboard() {
 }
 
 async function openProject(pid) {
+  _tcs=[]; _runs=[]; _groups=[]; _tcPicked.clear();
   clearInterval(_runsTimer);
   _curProj = _projects.find(p => p.id === pid);
   if (!_curProj) { await loadProjects(); _curProj = _projects.find(p => p.id === pid); }
@@ -463,6 +465,7 @@ function switchTab(name) {
   document.getElementById('tabt-'+name).classList.add('active');
   document.getElementById('tab-'+name).classList.add('active');
   clearInterval(_runsTimer);
+  if (name==='overview') Operations.overview();
   if (name==='scripts')  loadFiles();
   if (name==='cases')    loadTCs();
   if (name==='groups')   loadGroups();

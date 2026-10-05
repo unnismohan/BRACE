@@ -87,28 +87,37 @@ they are protected by project permissions and removed with run retention. Expect
 additional result-volume usage approximately equal to supported source/data files
 per run. The manifest is available from the run detail header.
 
-## Remaining implementation roadmap (updated)
+## Third implementation batch — execution, modularity and UI
 
-| Area | Remaining work |
-|---|---|
-| Runner isolation | Separate restricted workers, restricted filesystem/network access, and credentials scoped to each execution. |
-| Reproducible runs | Environment/argument provenance and full replay; Git revision and script/resource snapshots are implemented. |
-| Queue management | Per-project fairness, durable coordination, estimated waiting time, explicit cancelling state. |
-| Environment profiles | Per-project environment selection, controlled variables, encrypted secrets, run snapshots. |
-| Scheduling | Additional timezone/restart and missed-occurrence coverage; skip/queue policies are implemented. |
-| Git sync preview | Already exists through dry-run API and Preview UI; add broader regression coverage instead of duplicating it. |
-| Flaky tests | Explicit retry results, passed-after-retry distinction, and quarantine controls. |
-| Pagination | Connect pagination to case/run screens; validate histories and audit filtering consistently. |
-| Profiling | Representative database benchmarks, EXPLAIN plans, memory/load measurements. |
-| Dashboard and failures | Project overview, actionable failure layout, clearer empty/loading/error states. |
-| Editor and accessibility | Search/highlighting already exist; expand keyboard/contrast audit. Standard modal focus management is implemented; custom confirmation dialogs need further review. |
-| UI state | Persist filters/selections and reduce shared global state through namespaces. |
-| Backend modularity | Continue extracting auth, reporting, and routers; execution utilities and security policy are extracted already. |
-| Regression breadth | Cross-project isolation, scheduling, timeout descendants, and browser tests. |
+| Change | Delivered behavior | Evidence |
+| --- | --- | --- |
+| Backend modularization | main.py now composes routers/lifecycle; auth, execution, reporting, diagnostics, jobs and runtime each have owners. | Existing path/method API contract regression. |
+| Project fairness | Capacity-aware project admission, FIFO within each project, bounded execution. | Bulk backlog vs competing project and cancelled waiter tests. |
+| Environment profiles | Scoped profiles, encrypted secret variables, protected reads, run snapshots, restricted child environments, UI management/selection. | Encryption/redaction/reserved key checks and real Robot variable transport. |
+| Isolated workers | Authenticated per-project remote workers with source/artifact transfer, limits, cancellation and private hardened Compose example. | Real HTTP worker run, wrong credential/project rejection and artifact cleanup. |
+| Retry tracking | Opt-in 0–2 retries, every attempt persisted with artifacts, separate flaky pass marker/count. | Real fail-then-pass run preserves both logs. |
+| Quarantine | Reasoned manual quarantine, default manual/scheduled exclusion, explicit diagnostic inclusion. | Quarantine reason validation and overview counts. |
+| Pagination and persistence | Server-filtered case/run/user/suite pages, lazy paged suite members, paged selectors/pickers/history, existing paged items/audit, project/user filter persistence and cross-page selections. | API count/page/search regression and browser page/search/selection/refresh checks. |
+| Dashboard and failures | Project overview, recent failure links, schedule previews, retry evidence and actionable next-check hints. | Overview API and browser smoke. |
+| Performance baseline | Repeatable disposable database/parser benchmark plus case-order/item-status indexes. | Committed measurement JSON with environment and methodology. |
+| Production validation | Build/Chrome/Xvfb/Robot/rebot harness shipped in the image. | Harness ready; actual Docker/Chrome run blocked by absent Docker/Podman. |
+
+Usage, security boundaries, compatibility and detailed validation are documented
+in [Execution and modules](execution-and-modules.md). Baseline timings are in
+[benchmark-results.json](benchmark-results.json).
+
+## Further work outside these changes
+
+Durable multi-controller coordination, per-attempt VM isolation, additional
+Kubernetes network-policy deployment validation, all-time history statistics,
+and a comprehensive contrast/keyboard audit remain separate work. Metadata
+lists and coverage aggregates retain their contracts; the main large-table and
+picker flows now page on the server. Production Docker/Chrome validation is a
+required outstanding environment check, not a completed test.
 
 ## Validation record
 
-2026-10-05: 18 regression tests pass in a Python 3.12 virtual environment with
+First two batches, 2026-10-05: 18 regression tests pass in a Python 3.12 virtual environment with
 Robot Framework 7.5; the production image declares Python 3.14 and Robot 7.1.1.
 This is functional local validation, not verification of the production dependency
 set. All controller Python files parse and all nine JavaScript files pass syntax
@@ -121,3 +130,7 @@ Commit messages should describe the user-visible problem, implementation,
 compatibility changes, checks performed, and validation limitations. Keep this log
 and the in-app manual updated alongside behavior changes. Do not describe roadmap
 items as completed functionality.
+
+Third batch validation and commit details are recorded in execution-and-modules.md; production image validation remains blocked as described there.
+
+Third batch: 32 regression tests, including real Robot retry and HTTP worker, pass locally. Python compilation and JavaScript syntax checks pass. Benchmark methodology and the blocked production Docker/Chrome check are documented in execution-and-modules.md.

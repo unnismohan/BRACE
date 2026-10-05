@@ -6,7 +6,7 @@
 
 // ── Run Modal ──────────────────────────────────────────
 async function openRunModal() {
-  if (!_tcs.length) await loadTCs();
+  await Operations.openPicker();
   if (!_groups.length) await loadGroups();
   // TC list
   const list = document.getElementById('run-tc-list'); list.innerHTML='';
@@ -16,7 +16,10 @@ async function openRunModal() {
     d.innerHTML=`<input type="checkbox" class="run-chk" id="rtc-${tc.id}" value="${tc.id}" ${pre}><label for="rtc-${tc.id}"><span class="tc-code">${esc(tc.tc_code||'')}</span> ${esc(tc.name)}</label>`;
     list.appendChild(d);
   });
+  Operations.runPicked = new Set(_preSel);
   _preSel=[];
+  await Operations.runPage();
+  await Operations.loadRunProfiles();
   // Group list
   const sel=document.getElementById('run-grp-sel'); sel.innerHTML='';
   _groups.forEach(g => { const o=document.createElement('option'); o.value=g.id; o.textContent=`${g.name} (${g.tc_count} TCs)`; sel.appendChild(o); });
@@ -33,6 +36,7 @@ async function openRunModal() {
     }
   } catch(e) { tsel.innerHTML='<option value="">Could not load tags</option>'; }
 
+  await GroupPicker.attach('run-grp-sel');
   await loadRunConfig();
   const p=document.getElementById('run-parallel');
   p.value = _runCfg.default_parallel; p.max = _runCfg.max_parallel;
@@ -64,10 +68,13 @@ function onRunModeChange() {
 async function triggerRun() {
   const mode = document.getElementById('run-mode').value;
   const body = { run_name:document.getElementById('run-name').value.trim()||null, extra_args:document.getElementById('run-xargs').value.trim()||null };
+  body.profile_id = +document.getElementById('run-profile').value || null;
+  body.retry_count = +document.getElementById('run-retries').value || 0;
+  body.include_quarantined = document.getElementById('run-quarantine').checked;
   const par = parseInt(document.getElementById('run-parallel').value, 10);
   if (par >= 1) body.parallel = par;
   if (mode==='tcs') {
-    body.tc_ids = [...document.querySelectorAll('.run-chk:checked')].map(c=>+c.value);
+    body.tc_ids = [...Operations.runPicked];
     if (!body.tc_ids.length) { toast('Select at least one TC','e'); return; }
   } else if (mode==='tag') {
     body.tag = document.getElementById('run-tag-sel').value;
@@ -96,20 +103,13 @@ function runStartMsg(r) {
     ? (r.parallel >= r.total ? ' in parallel' : `, ${r.parallel} at a time`)
     : '';
   if (r.starts_immediately) return `Running ${n}${par}…`;
-  if (r.queued_ahead)
-    return `Queued behind ${r.queued_ahead} run${r.queued_ahead === 1 ? '' : 's'} — `
-         + 'it starts on its own.';
   const slots = r.slots_total || 0;
   return slots === 1
     ? 'Queued — the execution slot is busy. It starts as soon as it frees.'
     : `Queued — all ${slots} execution slots are busy. It starts as soon as one frees.`;
 }
 
-async function loadRuns() {
-  if (!_curProj) return;
-  try { _runs = await api('GET', `/projects/${_curProj.id}/runs`); renderRuns(); return _runs; }
-  catch(e) { toast(e.message,'e'); }
-}
+async function loadRuns() { return Lists.load('runs'); }
 
 function startRunsPoller() { clearInterval(_runsTimer); _runsTimer = setInterval(loadRuns, 5000); }
 
@@ -129,7 +129,7 @@ function runsClearFilters() {
 function syncRunUserFilter() {
   const sel = document.getElementById('runs-user');
   if (!sel) return;
-  const names = [...new Set(_runs.map(r => r.triggered_by).filter(Boolean))].sort();
+  const names = Lists.users;
   if (sel.dataset.names === names.join(' ')) return;
   sel.dataset.names = names.join(' ');
   const cur = sel.value;
@@ -144,7 +144,8 @@ function syncRunUserFilter() {
   sel.value = names.includes(cur) ? cur : '';
 }
 
-function renderRuns() {
+function renderRuns(fromServer=false) {
+  if (!fromServer) return Lists.changed('runs');
   const tbody = document.getElementById('runs-tbody');
   const q      = (document.getElementById('runs-search')?.value || '').trim().toLowerCase();
   const from   = document.getElementById('runs-from')?.value || '';
@@ -348,7 +349,7 @@ function renderRunHead(r) {
   const html = `
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
       <span class="sbadge ${r.status}">${r.status}</span>
-      ${r.queue_position ? `<span style="font-size:12px">Queue position: <b>${r.queue_position}</b> · ${r.slots_busy}/${r.slots_total} run slots busy</span>` : ''}
+      ${r.queued_total ? `<span style="font-size:12px">Queued submissions: <b>${r.queued_total}</b> · Projects share slots fairly · ${r.slots_busy}/${r.slots_total} run slots busy</span>` : ''}
       <span style="font-size:12px">By: <b>${esc(r.triggered_by||'—')}</b></span>
       ${r.git_commit ? `<span style="font-size:12px" title="Last synced Git commit; source manifest records local edits">Git: <code>${esc(r.git_commit.slice(0,12))}</code></span>` : ''}
       ${r.has_source_manifest ? `<button class="btn btn-sm btn-o" onclick="openReport('/results/${_curProj.id}/${runId}/source-manifest.json','Run source manifest')">Source manifest</button>` : ''}
@@ -450,7 +451,7 @@ async function refreshRunItems() {
 
 function rdItemRow(it) {
   const runId  = _rd.runId;
-  const expand = it.status === 'failed';
+  const expand = it.status === 'failed' || it.attempt_count > 1;
   const open   = !!_rd.open[it.id];
   return `<div class="tc-rrow">
       ${expand?`<button class="rd-x" onclick="rdToggle(${it.id})"
@@ -459,7 +460,7 @@ function rdItemRow(it) {
       <span class="tc-code">${esc(it.tc_code||'')}</span>
       <span class="name">${esc(it.tc_name||'')}${
         (!open && it.fail_summary)?`<span class="rd-fs"> — ${esc(it.fail_summary)}</span>`:''}</span>
-      <span class="sbadge ${it.status}">${it.status}</span>
+      <span class="sbadge ${it.status}">${it.status}</span>${it.passed_after_retry?'<span class="sbadge failed">Flaky pass</span>':''}
       <div class="bgrp">
         ${it.has_report?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/report.html`)},${jsArg((it.tc_name||'')+' Report')})">Report</button>`:''}
         ${it.has_log   ?`<button class="btn btn-sm btn-o" onclick="openReport(${jsArg(`/results/${_curProj.id}/${runId}/${it.rf_run_id}/log.html`)},${jsArg((it.tc_name||'')+' Log')})">Log</button>`:''}
@@ -518,7 +519,7 @@ async function rdToggle(id) {
 // open log.html and hunt for the red keyword to find out.
 function failureBlock(it) {
   if (!it) return `<div class="failbox"><div class="fb-msg">Loading failure detail…</div></div>`;
-  if (!(it.fail_summary || it.fail_detail))
+  if (!(it.fail_summary || it.fail_detail || it.attempts?.length))
     return `<div class="failbox"><div class="fb-msg">No failure detail was captured for this case — open the Log for the full trace.</div></div>`;
   // <img> cannot send the Authorization header, so the results route's
   // query-param token is the only way this loads — same trick as the report
@@ -532,6 +533,8 @@ function failureBlock(it) {
     ${it.fail_detail?`<div class="fb-msg">${esc(it.fail_detail)}</div>`:''}
     ${shot?`<a href="${esc(shot)}" target="_blank" rel="noopener" title="Open full screenshot">
       <img class="fb-shot" src="${esc(shot)}" alt="Screenshot at failure"></a>`:''}
+    ${Operations.attempts(it)}
+    ${Operations.failureHint(it)}
     ${locatorBlock(it)}
   </div>`;
 }
@@ -776,7 +779,7 @@ async function renderReports() {
     renderTrend(st.trend);
     renderTCStats('rpt-failing', st.top_failing, 'No failures recorded.');
     renderTCStats('rpt-flaky',   st.flaky,       'No flaky test cases.');
-    renderRunHistory(st.trend.slice().reverse());
+    await ReportHistory.load(true);
   } catch(e) { toast(e.message,'e'); }
 }
 
@@ -857,7 +860,7 @@ function renderTCStats(elId, items, emptyMsg) {
       <span class="srow-code">${esc(t.tc_code || '—')}</span>
       <span class="srow-name" title="${esc(t.tc_name || '')}">${esc(t.tc_name || 'Unnamed')}</span>
       <span class="srow-bar"><i style="width:${t.pass_rate}%"></i></span>
-      <span class="srow-num">${t.pass_rate}% · ${t.runs} run${t.runs>1?'s':''}</span>
+      <span class="srow-num">${t.pass_rate}%${t.passed_after_retry?' · '+t.passed_after_retry+' flaky pass(es)':''} · ${t.runs} run${t.runs>1?'s':''}</span>
     </div>`).join('');
 }
 

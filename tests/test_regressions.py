@@ -1,5 +1,7 @@
 """Run with python -m unittest discover -s tests -v."""
 import asyncio
+import json
+import re
 import os
 from pathlib import Path
 import sqlite3
@@ -19,14 +21,25 @@ os.environ.update(CONFIG_DIR=str(Path(_temp.name) / "config"),
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "controller"))
 import db
 import main
+import runtime, authentication, execution_engine, jobs
+from routes import runs as routes_runs, schedules as routes_schedules
 import execution
 import git_sync
 from provenance import snapshot_sources
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from security import LoginLimiter
 
 
 class SecurityTests(unittest.TestCase):
+    def test_public_api_contract_is_preserved(self):
+        paths = main.app.openapi()['paths']
+        baseline = json.loads((Path(__file__).parent / 'api_contract.json').read_text())
+        for path, methods in baseline:
+            normalized = re.sub(r':path(?=})', '', path)
+            for method in methods:
+                self.assertIn(method.lower(), paths.get(normalized, {}), (path, method))
+
     def setUp(self):
         db.init_db()
         with db.database() as conn:
@@ -35,7 +48,7 @@ class SecurityTests(unittest.TestCase):
             conn.execute("INSERT INTO users(username,password_hash,system_role) VALUES (?,?,?)",
                          ("admin", db.pwd_context.hash("old-password"), "admin"))
         self.client = TestClient(main.app)
-        self.token = main._make_token("admin", "admin")
+        self.token = authentication._make_token("admin", "admin")
         self.headers = {"Authorization": "Bearer " + self.token}
 
     def test_deleted_admin_token_denied(self):
@@ -72,9 +85,9 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/users", headers=self.headers).status_code, 401)
 
     def test_production_requires_encryption(self):
-        with patch.object(main, "BSS_ENV", "production"), patch.object(main, "encryption_available", return_value=False):
+        with patch.object(runtime, "BSS_ENV", "production"), patch.object(runtime, "encryption_available", return_value=False):
             with self.assertRaises(RuntimeError):
-                main._preflight_security_check()
+                runtime._preflight_security_check()
 
     def test_transaction_rolls_back(self):
         with self.assertRaises(RuntimeError):
@@ -94,7 +107,7 @@ class SecurityTests(unittest.TestCase):
         limiter = LoginLimiter(attempts=2, window=60, clock=lambda: clock[0])
         limiter.check("peer")
         limiter.check("peer")
-        with self.assertRaises(main.HTTPException) as caught:
+        with self.assertRaises(HTTPException) as caught:
             limiter.check("peer")
         self.assertEqual(caught.exception.status_code, 429)
         clock[0] = 61
@@ -112,22 +125,22 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             tid = conn.execute("INSERT INTO test_cases(project_id,name,tc_code,suite_path) VALUES (?,?,?,?)",
                                (pid, "Pass", "FROZEN_TEST", "pass.robot")).lastrowid
             tc = dict(conn.execute("SELECT * FROM test_cases WHERE id=?", (tid,)).fetchone())
-        suites = main._project_suites(pid)
+        suites = runtime._project_suites(pid)
         suites.mkdir(parents=True)
         (suites / "pass.robot").write_text("*** Test Cases ***\nPass\n    No Operation\n")
-        main._run_slots = main._test_slots = None
-        main._slots()
-        started = main._start_run(pid, [tc], "Frozen regression", "admin", None)
+        runtime._run_slots = runtime._test_slots = None
+        runtime._slots()
+        started = execution_engine._start_run(pid, [tc], "Frozen regression", "admin", None)
         run_id = started["run_id"]
         task = next(task for task in asyncio.all_tasks() if task.get_coro().__name__ == "_execute_run")
         await asyncio.wait_for(task, 20)
         with db.database() as conn:
             self.assertEqual(conn.execute("SELECT status FROM test_runs WHERE run_id=?", (run_id,)).fetchone()[0], "passed")
-        run_dir = main._project_results(pid) / run_id
+        run_dir = runtime._project_results(pid) / run_id
         self.assertTrue((run_dir / "sources" / "pass.robot").is_file())
         self.assertTrue((run_dir / "source-manifest.json").is_file())
         self.assertTrue((run_dir / "combined" / "report.html").is_file())
-        self.assertNotIn(run_id, main._active_runs)
+        self.assertNotIn(run_id, runtime._active_runs)
 
     async def test_cancelled_item_is_not_overwritten_by_worker(self):
         db.init_db()
@@ -136,25 +149,25 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             tid = conn.execute("INSERT INTO test_cases(project_id,name,tc_code,suite_path) VALUES (?,?,?,?)",
                                (pid, "Wait", "CANCEL_TEST", "wait.robot")).lastrowid
             tc = dict(conn.execute("SELECT * FROM test_cases WHERE id=?", (tid,)).fetchone())
-        suites = main._project_suites(pid)
+        suites = runtime._project_suites(pid)
         suites.mkdir(parents=True)
         (suites / "wait.robot").write_text("*** Test Cases ***\nWait\n    Sleep    60s\n")
-        main._run_slots = main._test_slots = None
-        main._slots()
-        started = main._start_run(pid, [tc], "Cancel regression", "admin", None)
+        runtime._run_slots = runtime._test_slots = None
+        runtime._slots()
+        started = execution_engine._start_run(pid, [tc], "Cancel regression", "admin", None)
         run_id = started["run_id"]
         task = next(task for task in asyncio.all_tasks() if task.get_coro().__name__ == "_execute_run")
         for _ in range(100):
-            if main._active_procs:
+            if runtime._active_procs:
                 break
             await asyncio.sleep(0.02)
-        self.assertTrue(main._active_procs)
-        await main.cancel_run(run_id, {"username": "admin", "role": "admin"})
+        self.assertTrue(runtime._active_procs)
+        await routes_runs.cancel_run(run_id, {"username": "admin", "role": "admin"})
         await asyncio.wait_for(task, 10)
         with db.database() as conn:
             self.assertEqual(conn.execute("SELECT status FROM test_run_items WHERE run_id=?", (run_id,)).fetchone()[0], "cancelled")
             self.assertEqual(conn.execute("SELECT status FROM test_runs WHERE run_id=?", (run_id,)).fetchone()[0], "cancelled")
-        self.assertFalse(main._active_procs)
+        self.assertFalse(runtime._active_procs)
 
     async def test_real_robot_process_can_be_terminated(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -202,7 +215,7 @@ class ParsingTests(unittest.TestCase):
 
     def test_schedule_policy_rejects_unknown_value(self):
         with self.assertRaises(ValueError):
-            main.ScheduleCreate(group_id=1, cron_expr="0 2 * * *", overlap_policy="unknown")
+            routes_schedules.ScheduleCreate(group_id=1, cron_expr="0 2 * * *", overlap_policy="unknown")
 
     def test_schedule_skip_checks_live_runs_on_owning_loop(self):
         db.init_db()
@@ -214,10 +227,10 @@ class ParsingTests(unittest.TestCase):
         class Loop:
             def is_closed(self): return False
             def call_soon_threadsafe(self, callback): callback()
-        with patch.object(main, "_main_loop", Loop()), patch.object(main, "_active_runs", {"active": {"group_id": gid, "status": "running"}}), patch.object(main, "_start_run") as start:
-            main._trigger_group_run(gid, "skip")
+        with patch.object(runtime, "_main_loop", Loop()), patch.object(runtime, "_active_runs", {"active": {"group_id": gid, "status": "running"}}), patch.object(execution_engine, "_start_run") as start:
+            jobs._trigger_group_run(gid, "skip")
             start.assert_not_called()
-            main._trigger_group_run(gid, "queue")
+            jobs._trigger_group_run(gid, "queue")
             start.assert_called_once()
 
     def test_content_change_with_same_size_and_timestamp(self):
