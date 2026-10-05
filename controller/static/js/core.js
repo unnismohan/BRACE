@@ -204,9 +204,59 @@ function toggleSidebar(force) {
   if (scrim) scrim.classList.toggle('open', open);
 }
 function showView(n) { document.querySelectorAll('.view').forEach(v => v.classList.remove('active')); document.getElementById('view-'+n).classList.add('active'); }
-function showModal(id) { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-document.querySelectorAll('.overlay').forEach(o => o.addEventListener('click', e => { if (e.target===o) o.classList.remove('open'); }));
+const ModalUX = {
+  stack: [],
+  focus: new Map(),
+  open(id) {
+    const modal = document.getElementById(id);
+    this.focus.set(id, document.activeElement);
+    this.stack = this.stack.filter(value => value !== id).concat(id);
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    const heading = modal.querySelector('h3');
+    if (heading) {
+      heading.id ||= id + '-heading';
+      modal.setAttribute('aria-labelledby', heading.id);
+    }
+    modal.querySelectorAll('.mclose').forEach(button => button.setAttribute('aria-label', 'Close dialog'));
+    if (id === 'modal-changepw') {
+      const required = !!_user?.must_change_password;
+      modal.querySelectorAll('[onclick*="closeModal"]').forEach(button => button.hidden = required);
+      document.getElementById('cpw-logout').hidden = !required;
+    }
+    modal.classList.add('open');
+    const first = modal.querySelector('input:not([type=hidden]), select, textarea') || modal.querySelector('button');
+    if (first) first.focus();
+  },
+  close(id) {
+    if (id === 'modal-changepw' && _user?.must_change_password) return;
+    document.getElementById(id).classList.remove('open');
+    this.stack = this.stack.filter(value => value !== id);
+    const previous = this.focus.get(id);
+    this.focus.delete(id);
+    if (previous?.isConnected) previous.focus();
+  }
+};
+function showModal(id) { ModalUX.open(id); }
+function closeModal(id) { ModalUX.close(id); }
+
+document.addEventListener('keydown', event => {
+  if (document.getElementById('dlg-overlay')?.classList.contains('open')) return;
+  const id = ModalUX.stack.at(-1);
+  if (!id) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeModal(id); }
+  if (event.key !== 'Tab') return;
+  const controls = [...document.getElementById(id).querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+    .filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
+  const first = controls[0], last = controls.at(-1);
+  if (!first) return;
+  if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) {
+    event.preventDefault(); last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement))) {
+    event.preventDefault(); first.focus();
+  }
+});
+document.querySelectorAll('.overlay').forEach(o => o.addEventListener('click', e => { if (e.target===o) closeModal(o.id); }));
 
 // ── Auth ───────────────────────────────────────────────
 async function doLogin() {
@@ -264,6 +314,7 @@ function logout() {
   // either way.
   if (_token) api('POST', '/auth/logout').catch(() => {});
   _token = ''; _user = null; _curProj = null;
+  closeModal('modal-changepw');
   localStorage.removeItem('brace_token'); localStorage.removeItem('brace_user');
   clearInterval(_runsTimer);
   document.getElementById('sidebar').style.display       = 'none';

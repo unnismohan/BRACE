@@ -18,7 +18,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
@@ -41,6 +41,7 @@ import mailer
 import maintenance
 from execution import map_bounded, terminate_tree
 from security import login_limiter, validate_password
+from provenance import snapshot_sources
 
 log = logging.getLogger(__name__)
 
@@ -970,6 +971,11 @@ async def git_pull(project_id: int, user=Depends(_proj_tester)):
             return n
 
         copied = await asyncio.to_thread(_copy_all)
+        revision = await _run(["git", "rev-parse", "HEAD"], cwd=clone_dir)
+        if revision.returncode == 0:
+            with database() as conn:
+                conn.execute("UPDATE projects SET last_git_commit=? WHERE id=?",
+                             (revision.stdout.strip(), project_id))
         yield f"[BRACE] Done — {copied} robot file(s) synced\n"
         audit(user, "git.pull", project_id=project_id, branch=branch, files=copied)
 
@@ -2069,16 +2075,17 @@ def _start_run(project_id: int, tcs: list, run_name: str, username: str,
     # (local). Mixing the two inflated every computed duration by the UTC offset.
     conn.execute(
         "INSERT INTO test_runs (run_id, project_id, group_id, run_name, triggered_by, total,"
-        " started_at, status, rerun_of) VALUES (?,?,?,?,?,?,?,?,?)",
+        " started_at, status, rerun_of, git_commit) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (run_id, project_id, group_id, run_name, username, len(tcs),
-         datetime.now().isoformat(timespec="seconds"), "queued", rerun_of),
+         datetime.now().isoformat(timespec="seconds"), "queued", rerun_of,
+         (conn.execute("SELECT last_git_commit FROM projects WHERE id=?", (project_id,)).fetchone() or {"last_git_commit": None})["last_git_commit"]),
     )
 
     items = []
     for tc in tcs:
         conn.execute(
-            "INSERT INTO test_run_items (run_id, test_case_id, tc_code, tc_name, status) VALUES (?,?,?,?,?)",
-            (run_id, tc["id"], tc["tc_code"], tc["name"], "pending"),
+            "INSERT INTO test_run_items (run_id, test_case_id, tc_code, tc_name, status, source_path) VALUES (?,?,?,?,?,?)",
+            (run_id, tc["id"], tc["tc_code"], tc["name"], "pending", tc.get("suite_path")),
         )
         item_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         items.append({"item_id": item_id, "tc": tc})
@@ -2086,7 +2093,8 @@ def _start_run(project_id: int, tcs: list, run_name: str, username: str,
     conn.close()
 
     # Starts queued; _execute_run flips it to running once a slot frees up.
-    _active_runs[run_id] = {"status": "queued", "total": len(tcs), "passed": 0, "failed": 0}
+    _active_runs[run_id] = {"status": "queued", "total": len(tcs), "passed": 0, "failed": 0,
+                            "project_id": project_id, "group_id": group_id}
     _metrics["runs_started"] += 1
     log.info("Run queued", extra={"run_id": run_id, "project_id": project_id,
                                   "user": username, "total": len(tcs),
@@ -2176,8 +2184,20 @@ async def _execute_run(run_id: str, project_id: int, items: list, extra_args: Op
         _publish(run_id, "summary", {"status": "running"})
         try:
             await _run_suite(run_id, project_id, items, extra_args, parallel)
+        except Exception as exc:
+            log.exception("Run preparation or execution failed", extra={"run_id": run_id})
+            if run_id not in _cancelled_runs:
+                now = datetime.now().isoformat()
+                await asyncio.to_thread(_db_write, [
+                    ("UPDATE test_runs SET status='failed', finished_at=? WHERE run_id=? AND status!='cancelled'", (now, run_id)),
+                    ("UPDATE test_run_items SET status='failed', finished_at=?, fail_summary=? WHERE run_id=? AND status IN ('pending','running')",
+                     (now, f"Run preparation failed: {exc}", run_id))])
+                if run_id in _active_runs:
+                    _active_runs[run_id]["status"] = "failed"
+                _publish(run_id, "done", {"status": "failed"})
         finally:
             _cancelled_runs.discard(run_id)
+            _active_runs.pop(run_id, None)
 
 
 # ── Failure extraction ───────────────────────────────────────────
@@ -2522,6 +2542,8 @@ async def _run_one_item(run_id: str, project_id: int, item: dict, extra_args: Op
 
         suite_path = tc.get("suite_path")
         target = suites_dir / suite_path if suite_path else suites_dir
+        if not _contained(suites_dir, target):
+            raise ValueError("Test source must stay inside the frozen project scripts")
 
         cmd = [
             sys.executable, "-m", "robot",
@@ -2646,7 +2668,7 @@ async def _run_suite(run_id: str, project_id: int, items: list, extra_args: Opti
     """
     run_dir     = _project_results(project_id) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    suites_dir  = _project_suites(project_id)
+    suites_dir = await asyncio.to_thread(snapshot_sources, _project_suites(project_id), run_dir / "sources")
     tally       = {"passed": 0, "failed": 0}
     # Read once for the whole run, not per case: it is a project setting and a
     # per-item query would be one more SQLite read per browser started.
@@ -3336,6 +3358,7 @@ def get_run(run_id: str, include_items: bool = False, user=Depends(_current_user
         d["items"] = item_list
     d["has_combined_report"] = (run_dir / "combined" / "report.html").exists()
     d["has_combined_log"]    = (run_dir / "combined" / "log.html").exists()
+    d["has_source_manifest"] = (run_dir / "source-manifest.json").is_file()
     return d
 
 
@@ -3863,7 +3886,8 @@ def _collect_resources(robot_src: str, suites_dir: Path, suite_path: str) -> lis
 
 def _build_debug_context(project_id: int, run_id: str,
                          rf_run_id: Optional[str], suite_path: Optional[str]) -> dict:
-    suites_dir = _project_suites(project_id)
+    frozen = _project_results(project_id) / run_id / "sources"
+    suites_dir = frozen if frozen.is_dir() else _project_suites(project_id)
     result_dir = _project_results(project_id) / run_id
     if rf_run_id:
         result_dir = result_dir / rf_run_id
@@ -3875,7 +3899,7 @@ def _build_debug_context(project_id: int, run_id: str,
     if not suite_path and rf_run_id:
         conn = get_db()
         row = conn.execute("""
-            SELECT tc.suite_path FROM test_run_items tri
+            SELECT COALESCE(tri.source_path, tc.suite_path) AS suite_path FROM test_run_items tri
             LEFT JOIN test_cases tc ON tri.test_case_id = tc.id
             WHERE tri.run_id=? AND tri.rf_run_id=?
         """, (run_id, rf_run_id)).fetchone()
@@ -4519,11 +4543,13 @@ def purge_suites(project_id: int, user=Depends(_current_user)):
 class ScheduleCreate(BaseModel):
     group_id:  int
     cron_expr: str
+    overlap_policy: Literal["queue", "skip"] = "queue"
 
 
 class ScheduleUpdate(BaseModel):
     cron_expr: Optional[str]  = None
     enabled:   Optional[bool] = None
+    overlap_policy: Optional[Literal["queue", "skip"]] = None
 
 
 @app.get("/api/projects/{project_id}/schedules")
@@ -4577,8 +4603,8 @@ def create_schedule(project_id: int, req: ScheduleCreate, user=Depends(_proj_tes
                         (req.group_id, project_id)).fetchone():
         conn.close()
         raise HTTPException(404, "Suite not found in this project")
-    conn.execute("INSERT INTO schedules (project_id, group_id, cron_expr) VALUES (?,?,?)",
-                 (project_id, req.group_id, req.cron_expr))
+    conn.execute("INSERT INTO schedules (project_id, group_id, cron_expr, overlap_policy) VALUES (?,?,?,?)",
+                 (project_id, req.group_id, req.cron_expr, req.overlap_policy))
     conn.commit()
     sid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.close()
@@ -4602,6 +4628,8 @@ def update_schedule(sid: int, req: ScheduleUpdate, user=Depends(_current_user)):
         conn.execute("UPDATE schedules SET cron_expr=? WHERE id=?", (req.cron_expr, sid))
     if req.enabled is not None:
         conn.execute("UPDATE schedules SET enabled=? WHERE id=?", (1 if req.enabled else 0, sid))
+    if req.overlap_policy is not None:
+        conn.execute("UPDATE schedules SET overlap_policy=? WHERE id=?", (req.overlap_policy, sid))
     conn.commit()
     conn.close()
     _reload_all_jobs()
@@ -4624,7 +4652,7 @@ def delete_schedule(sid: int, user=Depends(_current_user)):
     return {"ok": True}
 
 
-def _trigger_group_run(group_id: int):
+def _trigger_group_run(group_id: int, overlap_policy: str = "queue"):
     """Called by APScheduler from a worker thread.
 
     Must hand the work to the main event loop. The previous version spun up a
@@ -4652,9 +4680,17 @@ def _trigger_group_run(group_id: int):
         log.error("Scheduled run for '%s' skipped — no running event loop.", g["name"])
         return
     # Marshal onto the loop that owns the run executor and the slot semaphore
-    _main_loop.call_soon_threadsafe(
-        lambda: _start_run(g["project_id"], tcs, f"Scheduled: {g['name']}",
-                           "scheduler", None, group_id=group_id))
+    def launch():
+        # Check on the owning loop: simultaneous cron callbacks cannot both pass.
+        if overlap_policy == "skip" and any(
+                state.get("group_id") == group_id and state["status"] in {"queued", "running"}
+                for state in _active_runs.values()):
+            log.info("Scheduled suite %s skipped: an execution is already active", group_id)
+            audit("scheduler", "schedule.overlap_skipped", project_id=g["project_id"], target=group_id)
+            return
+        _start_run(g["project_id"], tcs, f"Scheduled: {g['name']}",
+                   "scheduler", None, group_id=group_id)
+    _main_loop.call_soon_threadsafe(launch)
     log.info("Scheduled run queued for suite '%s' (%d test cases).", g["name"], len(tcs))
 
 

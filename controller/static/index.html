@@ -6,7 +6,7 @@
 <title>BRACE — RF Test Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/brace.css">
+<link rel="stylesheet" href="/static/css/brace.css?v=20261005">
 <script>
   /* Applied before first paint so a dark-theme user never sees a white flash.
      core.js re-applies the same value once it loads; this is only the head start. */
@@ -1190,6 +1190,13 @@
     </div>
     <div id="sched-preview" class="sched-preview"></div>
     <div class="fr">
+      <label for="sched-overlap">When this suite is already queued or running</label>
+      <select id="sched-overlap">
+        <option value="skip">Skip this occurrence</option>
+        <option value="queue">Queue another run</option>
+      </select>
+    </div>
+    <div class="fr">
       <label class="u-check">
         <input type="checkbox" id="sched-enabled" class="w-auto" checked> Enabled
       </label>
@@ -1317,10 +1324,12 @@
 <div class="overlay" id="modal-changepw">
   <div class="modal">
     <div class="mhdr"><h3>Change Password</h3><button class="mclose" onclick="closeModal('modal-changepw')">×</button></div>
-    <div class="fr"><label>Current Password</label><input id="cpw-old" type="password"></div>
-    <div class="fr"><label>New Password</label><input id="cpw-new" type="password"></div>
+    <div class="fr"><label for="cpw-old">Current Password</label><input id="cpw-old" type="password" autocomplete="current-password"></div>
+    <div class="fr"><label for="cpw-new">New Password</label><input id="cpw-new" type="password" autocomplete="new-password" aria-describedby="cpw-policy"></div>
+    <p class="fhint" id="cpw-policy">Use at least 12 characters and at most 72 UTF-8 bytes.</p>
     <div class="mfoot">
       <button class="btn btn-o" onclick="closeModal('modal-changepw')">Cancel</button>
+      <button class="btn btn-o" id="cpw-logout" onclick="logout()" hidden>Sign out</button>
       <button class="btn btn-p" onclick="changePassword()">Update</button>
     </div>
   </div>

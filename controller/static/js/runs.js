@@ -350,6 +350,8 @@ function renderRunHead(r) {
       <span class="sbadge ${r.status}">${r.status}</span>
       ${r.queue_position ? `<span style="font-size:12px">Queue position: <b>${r.queue_position}</b> · ${r.slots_busy}/${r.slots_total} run slots busy</span>` : ''}
       <span style="font-size:12px">By: <b>${esc(r.triggered_by||'—')}</b></span>
+      ${r.git_commit ? `<span style="font-size:12px" title="Last synced Git commit; source manifest records local edits">Git: <code>${esc(r.git_commit.slice(0,12))}</code></span>` : ''}
+      ${r.has_source_manifest ? `<button class="btn btn-sm btn-o" onclick="openReport('/results/${_curProj.id}/${runId}/source-manifest.json','Run source manifest')">Source manifest</button>` : ''}
       <span style="font-size:12px">✓ ${r.passed} &nbsp; ✗ ${r.failed} &nbsp; / ${r.total}</span>
       ${r.rerun_of?`<span style="font-size:12px;color:var(--c-muted)">re-run of <a href="#" onclick="viewRunDetail(${jsArg(r.rerun_of)});return false">${esc(r.rerun_of)}</a></span>`:''}
     </div>

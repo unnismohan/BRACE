@@ -60,24 +60,60 @@ permission to terminate their child processes. No Chrome is required for these t
 Run Python AST parsing and `node --check` for all frontend files as well.
 Container builds, browser flows, and Linux descendant cleanup need separate validation.
 
-## Remaining implementation roadmap
+## Implemented: provenance, scheduling, and dialog usability
+
+| Change | Behavior and reason | Validation |
+|---|---|---|
+| Frozen execution sources | At execution start, copy supported project scripts/data into the run's sources directory off the event loop. Robot executes those copies. A SHA-256 manifest records file content; subsequent edits cannot change that run's input files. | Frozen-copy regression and a real passing Robot run with combined report generation. |
+| Git provenance | Successful Git pull records HEAD on the project; each run records the last synced revision. Source manifest remains authoritative when local edits differ from Git. | Additive migrations and passing run integration; external Git server not exercised. |
+| Historical source paths | Each run item retains its source path even when its test case changes later. AI debug context prefers the frozen files for new runs, retaining legacy fallback. | Regression suite; AI endpoint not exercised. |
+| Schedule overlap control | Schedules choose queue or skip when their suite is already queued/running. Check happens on the owning event loop and skipped occurrences are audited. Existing schedules retain queue; new schedules in the UI default to skip. | Invalid-policy validation and skip/queue callback regression. |
+| Preparation failures | Snapshot/executor errors close pending/running items and the run as failed instead of leaving them stranded. | Source inspection; fault-injection expansion remains pending. |
+| Completed-run memory cleanup | Remove finished runs from the live-state dictionary after persisting/publishing completion. This bounds memory and stops finished work from permanently suppressing maintenance. | Real passing run confirms live state removal. |
+| Accessible dialogs | Dialog roles, heading labels, initial field focus, keyboard focus containment, Escape dismissal, and focus restoration live in a ModalUX namespace. Forced password dialogs hide dismissal actions and provide Sign out. | Browser smoke check: required dialog survives refresh, Escape cannot dismiss it, Shift+Tab wraps inside, and Sign out returns to login; console reports no errors. |
+| Reliable hidden controls | Global hidden CSS rule prevents button styling from exposing hidden controls. Stylesheet URL changes to invalidate old CSS caches. | Browser confirmed Cancel and Close hidden on mandatory password dialog. |
+
+### Provenance compatibility and storage
+
+Snapshots happen when execution starts, rather than while a run waits in the queue.
+They copy `.robot`, `.resource`, `.py`, `.yaml`, `.yml`, `.txt`, `.csv`, `.xlsx`,
+`.json`, and `.ini` files; `.git`, `.venv`, and `__pycache__` are excluded.
+Symlinks are unsupported and fail preparation. Files referenced outside the
+project, absolute resource paths, external services, installed libraries, and
+environment credentials are not frozen. Test suites relying on those paths need
+container validation. This is source provenance, not complete environment replay.
+Snapshot files may contain embedded credentials/data, just like original scripts;
+they are protected by project permissions and removed with run retention. Expect
+additional result-volume usage approximately equal to supported source/data files
+per run. The manifest is available from the run detail header.
+
+## Remaining implementation roadmap (updated)
 
 | Area | Remaining work |
 |---|---|
 | Runner isolation | Separate restricted workers, restricted filesystem/network access, and credentials scoped to each execution. |
-| Reproducible runs | Git commit recording, script/resource snapshots, environment and argument provenance. |
+| Reproducible runs | Environment/argument provenance and full replay; Git revision and script/resource snapshots are implemented. |
 | Queue management | Per-project fairness, durable coordination, estimated waiting time, explicit cancelling state. |
 | Environment profiles | Per-project environment selection, controlled variables, encrypted secrets, run snapshots. |
-| Scheduling | Configurable skip/queue overlap policies and regression coverage. |
-| Git sync preview | Review additions, changes, and missing cases before committing reconciliation. |
+| Scheduling | Additional timezone/restart and missed-occurrence coverage; skip/queue policies are implemented. |
+| Git sync preview | Already exists through dry-run API and Preview UI; add broader regression coverage instead of duplicating it. |
 | Flaky tests | Explicit retry results, passed-after-retry distinction, and quarantine controls. |
 | Pagination | Connect pagination to case/run screens; validate histories and audit filtering consistently. |
 | Profiling | Representative database benchmarks, EXPLAIN plans, memory/load measurements. |
 | Dashboard and failures | Project overview, actionable failure layout, clearer empty/loading/error states. |
-| Editor and accessibility | Search/line navigation improvements, modal focus management, keyboard/contrast audit. |
+| Editor and accessibility | Search/highlighting already exist; expand keyboard/contrast audit. Standard modal focus management is implemented; custom confirmation dialogs need further review. |
 | UI state | Persist filters/selections and reduce shared global state through namespaces. |
 | Backend modularity | Continue extracting auth, reporting, and routers; execution utilities and security policy are extracted already. |
 | Regression breadth | Cross-project isolation, scheduling, timeout descendants, and browser tests. |
+
+## Validation record
+
+2026-10-05: 18 regression tests pass in a Python 3.12 virtual environment with
+Robot Framework 7.5; the production image declares Python 3.14 and Robot 7.1.1.
+This is functional local validation, not verification of the production dependency
+set. All controller Python files parse and all nine JavaScript files pass syntax
+checks. Browser smoke checks cover mandatory password dialog, refresh, focus wrap,
+Escape protection, and sign out. Docker/Kubernetes and Chrome execution were not run.
 
 ## Commit notes
 

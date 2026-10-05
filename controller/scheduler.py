@@ -80,7 +80,7 @@ def reload_schedules(get_db_fn, trigger_group_fn):
     try:
         conn = get_db_fn()
         rows = conn.execute("""
-            SELECT s.id, s.group_id, s.cron_expr, tg.name AS group_name
+            SELECT s.id, s.group_id, s.cron_expr, s.overlap_policy, tg.name AS group_name
             FROM   schedules  s
             JOIN   test_groups tg ON s.group_id = tg.id
             WHERE  s.enabled = 1
@@ -96,7 +96,7 @@ def reload_schedules(get_db_fn, trigger_group_fn):
             scheduler.add_job(
                 trigger_group_fn,
                 trigger=trigger,
-                args=[row["group_id"]],
+                args=[row["group_id"], row["overlap_policy"]],
                 id=f"sched_{row['id']}",
                 replace_existing=True,
             )

@@ -387,6 +387,10 @@ def init_db():
     conn.commit()
 
     _add_column(c, "users", "session_version", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(c, "schedules", "overlap_policy", "TEXT NOT NULL DEFAULT 'queue'")
+    _add_column(c, "projects", "last_git_commit", "TEXT")
+    _add_column(c, "test_runs", "git_commit", "TEXT")
+    _add_column(c, "test_run_items", "source_path", "TEXT")
     c.execute("CREATE INDEX IF NOT EXISTS idx_runs_project_started ON test_runs(project_id, started_at DESC, id DESC)")
     conn.commit()
 

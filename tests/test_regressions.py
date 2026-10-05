@@ -21,6 +21,7 @@ import db
 import main
 import execution
 import git_sync
+from provenance import snapshot_sources
 from fastapi.testclient import TestClient
 from security import LoginLimiter
 
@@ -104,6 +105,30 @@ class SecurityTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_executes_frozen_sources_and_merges_reports(self):
+        db.init_db()
+        with db.database() as conn:
+            pid = conn.execute("INSERT INTO projects(name) VALUES ('Frozen run regression')").lastrowid
+            tid = conn.execute("INSERT INTO test_cases(project_id,name,tc_code,suite_path) VALUES (?,?,?,?)",
+                               (pid, "Pass", "FROZEN_TEST", "pass.robot")).lastrowid
+            tc = dict(conn.execute("SELECT * FROM test_cases WHERE id=?", (tid,)).fetchone())
+        suites = main._project_suites(pid)
+        suites.mkdir(parents=True)
+        (suites / "pass.robot").write_text("*** Test Cases ***\nPass\n    No Operation\n")
+        main._run_slots = main._test_slots = None
+        main._slots()
+        started = main._start_run(pid, [tc], "Frozen regression", "admin", None)
+        run_id = started["run_id"]
+        task = next(task for task in asyncio.all_tasks() if task.get_coro().__name__ == "_execute_run")
+        await asyncio.wait_for(task, 20)
+        with db.database() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM test_runs WHERE run_id=?", (run_id,)).fetchone()[0], "passed")
+        run_dir = main._project_results(pid) / run_id
+        self.assertTrue((run_dir / "sources" / "pass.robot").is_file())
+        self.assertTrue((run_dir / "source-manifest.json").is_file())
+        self.assertTrue((run_dir / "combined" / "report.html").is_file())
+        self.assertNotIn(run_id, main._active_runs)
+
     async def test_cancelled_item_is_not_overwritten_by_worker(self):
         db.init_db()
         with db.database() as conn:
@@ -163,6 +188,38 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_frozen_source_survives_edits(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "scripts"
+            source.mkdir()
+            script = source / "example.robot"
+            script.write_text("original")
+            destination = snapshot_sources(source, root / "run" / "sources")
+            script.write_text("changed")
+            self.assertEqual((destination / "example.robot").read_text(), "original")
+            self.assertTrue((destination.parent / "source-manifest.json").is_file())
+
+    def test_schedule_policy_rejects_unknown_value(self):
+        with self.assertRaises(ValueError):
+            main.ScheduleCreate(group_id=1, cron_expr="0 2 * * *", overlap_policy="unknown")
+
+    def test_schedule_skip_checks_live_runs_on_owning_loop(self):
+        db.init_db()
+        with db.database() as conn:
+            pid = conn.execute("INSERT INTO projects(name) VALUES ('Schedule regression')").lastrowid
+            gid = conn.execute("INSERT INTO test_groups(project_id,name) VALUES (?, 'Suite')", (pid,)).lastrowid
+            tid = conn.execute("INSERT INTO test_cases(project_id,name) VALUES (?, 'Scheduled')", (pid,)).lastrowid
+            conn.execute("INSERT INTO group_test_cases(group_id,test_case_id) VALUES (?,?)", (gid, tid))
+        class Loop:
+            def is_closed(self): return False
+            def call_soon_threadsafe(self, callback): callback()
+        with patch.object(main, "_main_loop", Loop()), patch.object(main, "_active_runs", {"active": {"group_id": gid, "status": "running"}}), patch.object(main, "_start_run") as start:
+            main._trigger_group_run(gid, "skip")
+            start.assert_not_called()
+            main._trigger_group_run(gid, "queue")
+            start.assert_called_once()
+
     def test_content_change_with_same_size_and_timestamp(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

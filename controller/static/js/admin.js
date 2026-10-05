@@ -229,6 +229,7 @@ function openSchedModal(raw) {
     : '<option value="">— no suites yet —</option>';
   document.getElementById('sched-cron').value = s ? s.cron_expr : '0 2 * * *';
   document.getElementById('sched-enabled').checked = s ? !!s.enabled : true;
+  document.getElementById('sched-overlap').value = s ? (s.overlap_policy || 'queue') : 'skip';
   schedPreview();
   showModal('modal-sched');
 }
@@ -263,13 +264,14 @@ async function saveSchedule() {
   const gid  = +document.getElementById('sched-group').value;
   const cron = document.getElementById('sched-cron').value.trim();
   const on   = document.getElementById('sched-enabled').checked;
+  const overlap = document.getElementById('sched-overlap').value;
   if (!gid)  { toast('Select a suite','e'); return; }
   if (!cron) { toast('Enter a cron expression','e'); return; }
   try {
     if (_schedEditId) {
-      await api('PUT', `/schedules/${_schedEditId}`, { cron_expr: cron, enabled: on });
+      await api('PUT', `/schedules/${_schedEditId}`, { cron_expr: cron, enabled: on, overlap_policy: overlap });
     } else {
-      const r = await api('POST', `/projects/${_curProj.id}/schedules`, { group_id: gid, cron_expr: cron });
+      const r = await api('POST', `/projects/${_curProj.id}/schedules`, { group_id: gid, cron_expr: cron, overlap_policy: overlap });
       if (!on) await api('PUT', `/schedules/${r.id}`, { enabled: false });
     }
     toast('Schedule saved','s');

@@ -343,6 +343,9 @@ TC_002 Offer Group,Base plan offer group,UPC/Testcases/TC_002_Offer_Group.robot,
         <b>Every 4 hours</b>, <b>Weekly Sun 03:00</b>) or type your own.</li>
     <li><b>Enabled</b> — untick to keep the schedule but stop it firing.</li>
   </ul>
+  <p><b>Overlap policy:</b> skip an occurrence while its suite is already queued or
+  running, or queue another run. Existing schedules retain queue; new schedules
+  default to skip in the dialog.</p>
   <h4>The schedules table</h4>
   <p>One row per schedule, five columns:</p>
   <table><thead><tr><th>Column</th><th>Shows</th></tr></thead><tbody>
