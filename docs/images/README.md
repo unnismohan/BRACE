@@ -19,6 +19,7 @@ GitHub, on GitLab, and in an offline clone.
 | File | Shows |
 |------|-------|
 | `runs.png`     | Runs list mid-execution, one run `running` |
+| `overview.png` | Redesigned overview: metrics, failure activity, schedules and execution coverage (disposable local demo data) |
 | `failure.png`  | Run detail with the inline failure summary expanded |
 | `coverage.png` | Reports → Coverage |
 | `editor.png`   | Scripts tab, file tree + editor |

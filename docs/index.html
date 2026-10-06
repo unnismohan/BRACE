@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BRACE — self-hosted test management for Robot Framework</title>
-<meta name="description" content="Projects, suites, parallel runs, scheduling, reports and email alerts for Robot Framework. One container, no external database, works air-gapped.">
+<meta name="description" content="Self-hosted Robot Framework test management with isolated project runners, environment profiles, fair queues, retries, quarantine, scheduling and reports. Docker and Kubernetes deployment.">
 
 <!-- Open Graph: what shows up when the link is pasted into Slack or a tweet. -->
 <meta property="og:title" content="BRACE — self-hosted test management for Robot Framework">
-<meta property="og:description" content="Projects, suites, parallel runs, scheduling, reports and email alerts. One container, no external database, works air-gapped.">
+<meta property="og:description" content="Manage Robot Framework tests with isolated project runners, profiles, fair queues, retry history, quarantine and project dashboards. Self-hosted on Docker or Kubernetes.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="images/runs.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -144,18 +144,19 @@ footer a{color:var(--muted)}
     <p class="lead">
       Robot Framework runs your tests. BRACE gives your team everything around
       them — projects, suites, parallel execution, scheduling, reports and
-      alerts. One container, no external database, and it works air-gapped.
+      alerts. Separate project runners keep test execution apart from the
+      controller. Self-host on Docker or Kubernetes, with no external database.
     </p>
     <div class="cta">
       <a class="btn btn-p" href="#start">Get started</a>
       <a class="btn btn-o" href="https://github.com/unnismohan/BRACE">View on GitHub</a>
     </div>
     <div class="badges">
-      <span>Apache-2.0</span><span>Self-hosted</span><span>Single container</span>
+      <span>Apache-2.0</span><span>Self-hosted</span><span>Isolated project runners</span>
       <span>SQLite — no external DB</span><span>Air-gap friendly</span>
     </div>
     <div class="shot">
-      <img src="images/runs.png" alt="The BRACE runs list, showing a suite executing with live progress">
+      <img src="images/overview.png" alt="BRACE project overview with metric cards, recent failures, schedules and execution coverage">
     </div>
   </div>
 
@@ -169,9 +170,9 @@ footer a{color:var(--muted)}
       <div class="grid">
         <div class="card">
           <h3>Parallel execution</h3>
-          <p>Cases inside a run execute concurrently against a global browser
-             budget, so a 44-case suite finishes in minutes without OOM-killing
-             the pod.</p>
+          <p>Cases execute concurrently within configurable run and browser
+             limits. Fair queues share available run slots across projects.
+             Size worker resources and concurrency for your test workload.</p>
         </div>
         <div class="card">
           <h3>Failure summaries inline</h3>
@@ -180,8 +181,9 @@ footer a{color:var(--muted)}
         </div>
         <div class="card">
           <h3>Re-run only what failed</h3>
-          <p>Three cases instead of forty-four, named as a retry and linked back
-             to the run it came from.</p>
+          <p>Re-run the failed subset as a linked diagnostic run. Optional
+             automatic retries preserve each attempt and flag a later pass
+             as flaky; retries repeat the test file and its side effects.</p>
         </div>
         <div class="card">
           <h3>Scheduling</h3>
@@ -195,8 +197,9 @@ footer a{color:var(--muted)}
         </div>
         <div class="card">
           <h3>Email notifications</h3>
-          <p>One mail per run, and only when the outcome changes — so a suite
-             that has been red for weeks does not mail you nightly.</p>
+          <p>Configure per-project outcome notifications, including alerts
+             when the result changes, to keep recurring failures from
+             overwhelming your inbox.</p>
         </div>
         <div class="card">
           <h3>Projects and roles</h3>
@@ -205,8 +208,30 @@ footer a{color:var(--muted)}
         </div>
         <div class="card">
           <h3>Built for locked-down networks</h3>
-          <p>No CDN, no npm build step, no outbound calls at runtime. Prometheus
-             metrics at <code>/metrics</code> when you want them.</p>
+          <p>The UI needs no CDN or npm build step. Git sync, email, optional AI
+             and external test targets need approved network access. Offline
+             deployments require preloaded images and dependencies.</p>
+        </div>
+        <div class="card">
+          <h3>Environment profiles</h3>
+          <p>Select project-specific variables and encrypted test secrets.
+             Each queued run preserves its selected profile snapshot.</p>
+        </div>
+        <div class="card">
+          <h3>Test quarantine</h3>
+          <p>Exclude unstable cases from normal and scheduled runs with a
+             recorded reason. Include them explicitly for diagnosis and
+             restore them when fixed.</p>
+        </div>
+        <div class="card">
+          <h3>Project overview</h3>
+          <p>See execution coverage, queues, active work, recent failures and
+             upcoming schedules. Open failure details directly from the dashboard.</p>
+        </div>
+        <div class="card">
+          <h3>Search and pagination</h3>
+          <p>Search across cases and runs, with paginated lists and persistent
+             account/project filters. Case selections survive page changes.</p>
         </div>
       </div>
     </div>
@@ -215,19 +240,26 @@ footer a{color:var(--muted)}
   <section id="start" class="alt">
     <div class="wrap">
       <h2>Quick start</h2>
-      <p class="sub">Docker is the only prerequisite.</p>
-      <pre><span class="c"># clone and run</span>
+      <p class="sub">Trusted local testing with Git, Docker and Docker Compose.</p>
+      <pre><span class="c"># local mode: test scripts execute inside the controller</span>
 git clone https://github.com/unnismohan/BRACE.git &amp;&amp; cd BRACE
 docker compose -f docker-compose.local.yml up -d --build</pre>
       <p style="margin-top:18px; color:var(--muted); font-size:14.5px">
         Open <b>http://localhost:8080</b> and sign in as
-        <code>admin</code> / <code>admin</code>. An example project ships with the
-        repo — one passing suite and one that fails on purpose — so you can see
-        failure summaries and re-run-failed without writing anything first.
+        <code>admin</code> / <code>admin</code> on a fresh local database.
+        Change the initial password before continuing, then create a project
+        and upload or Git-sync your Robot scripts. Local mode gives scripts
+        access to the controller's files and credentials.
       </p>
       <p style="margin-top:10px; font-size:14.5px">
-        For Kubernetes, sizing and configuration, see the
-        <a href="https://github.com/unnismohan/BRACE#readme">README</a>.
+        For isolated deployment, use the
+        <a href="https://github.com/unnismohan/BRACE/blob/main/docker-compose.isolated.yml">two-container Compose example</a>
+        with generated credentials, or follow the
+        <a href="https://github.com/unnismohan/BRACE/blob/main/k8s/README.md">Kubernetes deployment guide</a>.
+        Kubernetes uses one controller replica and one dedicated runner replica
+        per project. Runner replica autoscaling is not supported yet.
+        See the <a href="https://github.com/unnismohan/BRACE/blob/main/docs/execution-and-modules.md">execution guide</a>
+        for configuration and isolation boundaries.
       </p>
     </div>
   </section>
@@ -235,8 +267,13 @@ docker compose -f docker-compose.local.yml up -d --build</pre>
   <section id="screens">
     <div class="wrap">
       <h2>Screens</h2>
-      <p class="sub">Running against the bundled example project.</p>
+      <p class="sub">Demo data illustrating the dashboard and execution workflows.</p>
       <div class="screens">
+        <figure>
+          <img src="images/overview.png" loading="lazy" alt="Project overview with separate metric cards and activity panels">
+          <figcaption><b>Overview</b> — project metrics, actionable failures,
+            schedules and execution coverage in one responsive view.</figcaption>
+        </figure>
         <figure>
           <img src="images/failure.png" alt="Run detail showing why a test case failed">
           <figcaption><b>Why it failed</b> — the failing keyword and message, in the
