@@ -1,4 +1,5 @@
 #!/bin/bash
+# LEGACY shared-PVC module sync. Use project Git sync/UI upload for current runs.
 # ═══════════════════════════════════════════════════════════════
 # Sync RF automation scripts into aria-rf-suites-pvc
 #
@@ -83,7 +84,7 @@ for MODULE_DIR in "${LOCAL_SCRIPTS}"/*/; do
     echo "  Replacing ${MODULE}..."
     oc exec "${SYNC_POD}" -n "${NAMESPACE}" -- sh -c "rm -rf /opt/rf/suites/${MODULE}" 2>/dev/null || true
     oc cp "${MODULE_DIR}" "${NAMESPACE}/${SYNC_POD}:/opt/rf/suites/${MODULE}"
-    oc exec "${SYNC_POD}" -n "${NAMESPACE}" -- sh -c "chmod -R 777 /opt/rf/suites/${MODULE}"
+    oc exec "${SYNC_POD}" -n "${NAMESPACE}" -- sh -c "chmod -R ug+rwX /opt/rf/suites/${MODULE}"
 done
 
 echo "  Verifying..."

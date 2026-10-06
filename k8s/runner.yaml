@@ -1,0 +1,107 @@
+# Dedicated project-1 HTTP runner. Keep replicas=1: job state is pod-local.
+# Match the controller image tag and the project ID in the endpoint Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brace-runner-project-1
+  namespace: brace
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: brace-runner
+      brace-project: "1"
+  template:
+    metadata:
+      labels:
+        app: brace-runner
+        brace-project: "1"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: registry.example.com/brace/brace-runner-hardened:2.2.1
+          imagePullPolicy: Always
+          command: ["/bin/bash", "/opt/rf/controller/entrypoint-runner.sh"]
+          ports:
+            - name: runner-http
+              containerPort: 8090
+          env:
+            - name: BRACE_RUNNER_PROJECT_ID
+              value: "1"
+            - name: BRACE_RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: brace-runner-project-1
+                  key: token
+            - name: BRACE_RUNNER_CAPACITY
+              value: "3"
+            - name: BRACE_RUNNER_WORK_DIR
+              value: /tmp
+            - name: TZ
+              value: Asia/Kolkata
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          startupProbe:
+            httpGet: {path: /health, port: runner-http}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /health, port: runner-http}
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          livenessProbe:
+            httpGet: {path: /health, port: runner-http}
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: work
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brace-runner-project-1
+  namespace: brace
+spec:
+  type: ClusterIP
+  selector:
+    app: brace-runner
+    brace-project: "1"
+  ports:
+    - name: runner-http
+      port: 8090
+      targetPort: runner-http

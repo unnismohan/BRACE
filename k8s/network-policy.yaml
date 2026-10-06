@@ -1,0 +1,42 @@
+# Requires a NetworkPolicy-capable CNI. Test-target egress is denied by default.
+# Add approved destinations before expecting browser tests to reach them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: brace-project-1-runner
+  namespace: brace
+spec:
+  podSelector:
+    matchLabels:
+      app: brace-runner
+      brace-project: "1"
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: brace-rf-controller
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    # Adapt for NodeLocal DNS or a custom cluster DNS service.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Example approved target (uncomment and replace; not a public allow-all):
+    # - to:
+    #     - ipBlock:
+    #         cidr: 192.0.2.10/32
+    #   ports:
+    #     - protocol: TCP
+    #       port: 443

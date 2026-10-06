@@ -1,4 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
+# LEGACY standalone Job workflow; not the current controller HTTP runner.
+# See k8s/README.md. Do not apply this unresolved template directly.
 # BRACE RF Runner — OpenShift Job Template
 # Triggered by: bash k8s/trigger-job.sh <MODULE>
 # Namespace: brace

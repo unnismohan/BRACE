@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# BRACE RF Controller — Deployment + Service + Route
+# BRACE RF Controller — Deployment + internal Service (remote execution)
 # Apply: oc apply -f k8s/deployment.yaml
 # ═══════════════════════════════════════════════════════════════
 
@@ -37,13 +37,20 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
       securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
 
       # Optional. Only needed when the applications under test are not
-      # resolvable by cluster DNS — common in isolated lab environments.
+      # resolvable by cluster DNS. Test-target aliases belong on runner pods;
+      # controller aliases are only needed for controller-side Git/SMTP access.
       # Delete this block entirely if your DNS already resolves them.
       # hostAliases:
       #   - ip: "10.0.0.10"
@@ -62,6 +69,15 @@ spec:
               name: http
 
           env:
+            - name: BRACE_RUNNER_MODE
+              value: remote
+            - name: BRACE_REQUIRE_ISOLATION
+              value: "true"
+            - name: BRACE_RUNNER_ENDPOINTS
+              valueFrom:
+                secretKeyRef:
+                  name: brace-runner-endpoints
+                  key: endpoints
             - name: HOME
               value: /tmp
             - name: SUITES_DIR
@@ -69,7 +85,7 @@ spec:
             - name: RESULTS_DIR
               value: /opt/rf/results
             - name: BSS_ENV
-              value: staging
+              value: production
             # Surfaced by /health and the startup log — keep in step with the
             # image tag above so you can confirm which build is actually live.
             - name: IMAGE_TAG
@@ -80,17 +96,12 @@ spec:
             # Max runs admitted at once. Runs beyond this queue.
             - name: BRACE_MAX_CONCURRENT_RUNS
               value: "3"
-            # THE limit that matters: total robot processes — i.e. browsers —
-            # in flight across every run. Test cases now execute in parallel
-            # within a run, so this, not the run count, is what sizes the pod:
-            #   2 CPU /  4Gi -> 3   (current)
-            #   4 CPU /  8Gi -> 6
-            #   8 CPU / 16Gi -> 12
-            # Raise this and the resource limits below together, never alone.
+            # Global Robot job budget across all project runners.
+            # Size worker resources and BRACE_RUNNER_CAPACITY accordingly.
             - name: BRACE_MAX_CONCURRENT_TESTS
               value: "3"
             # Cases one run may execute at once, capped by the budget above.
-            # Left equal to it, a lone run uses the whole pod instead of
+            # Left equal to it, a lone run uses the whole budget instead of
             # trickling through one case at a time. Testers can override per run.
             - name: BRACE_RUN_PARALLEL
               value: "3"
@@ -161,32 +172,24 @@ spec:
                   name: brace-secret
                   key: BRACE_ENCRYPT_KEY
             # Seeds the bootstrap 'admin' password on a fresh database.
-            # Optional: without it the account is created as admin/admin and
-            # must be changed at first login.
+            # Required in this production example; never seed admin/admin.
             - name: BRACE_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: brace-secret
                   key: BRACE_ADMIN_PASSWORD
-                  optional: true
+          # Controller still parses reports and handles artifact archives.
+          # Browser resources belong to the separate runner Deployment.
           resources:
-            # Requests are what the scheduler reserves and what protects the pod
-            # from eviction — not the limits. The old 200M request was sized for
-            # an idle controller; with BRACE_MAX_CONCURRENT_TESTS=3 this pod runs
-            # three Chrome instances and routinely uses GBs, so it was both
-            # placeable on a node with no real room and first in line to be
-            # evicted under node memory pressure.
-            # Keep requests roughly in step with steady-state usage at your
-            # configured concurrency; raise both columns together when you raise
-            # BRACE_MAX_CONCURRENT_TESTS.
             requests:
-              memory: "200Mi"
-              cpu: "200m"
+              memory: "512Mi"
+              cpu: "250m"
             limits:
-              memory: "4Gi"     # headroom for Chrome during test runs
-              cpu: "2000m"
+              memory: "1Gi"
+              cpu: "1000m"
 
           securityContext:
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             runAsNonRoot: true
             capabilities:
@@ -255,11 +258,8 @@ spec:
         - name: dshm
           emptyDir:
             medium: Memory
-            # Chrome maps its render surfaces here; ~512Mi covers roughly 3
-            # browsers. Starving it shows up as random renderer crashes
-            # mid-run, not as an obvious OOM. Raise it with
-            # BRACE_MAX_CONCURRENT_TESTS. Counts against the memory limit.
-            sizeLimit: 512Mi
+            # Controller entrypoint still starts Xvfb; browser work is remote.
+            sizeLimit: 64Mi
         - name: tmp
           emptyDir: {}
 
@@ -276,20 +276,3 @@ spec:
     - port: 8080
       targetPort: 8080
       name: http
-
----
-# OpenShift Route — exposes dashboard externally
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: brace-rf-dashboard
-  namespace: brace
-spec:
-  to:
-    kind: Service
-    name: brace-rf-controller
-  port:
-    targetPort: http
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect

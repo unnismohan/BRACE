@@ -1,0 +1,16 @@
+# Optional OpenShift-only dashboard exposure.
+# OpenShift Route — exposes dashboard externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: brace-rf-dashboard
+  namespace: brace
+spec:
+  to:
+    kind: Service
+    name: brace-rf-controller
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

@@ -1,4 +1,6 @@
 #!/bin/bash
+# LEGACY standalone Job workflow, not controller-managed HTTP execution.
+# See k8s/README.md; current deployments use runner.yaml.
 # ═══════════════════════════════════════════════════════════════
 # BRACE RF Test Trigger
 #

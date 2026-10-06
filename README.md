@@ -109,29 +109,26 @@ docker compose -f docker-compose.local.yml down && rm -rf local_data/config
 
 ## Architecture
 
-One pod, one process. No external database, no message broker, no cache.
+The production manifests separate control and test execution. No external
+database, broker or distributed worker queue is required by the current stack.
 
-```
-┌──────────────────────── pod: brace-rf-controller ─────────────────────────┐
-│                                                                            │
-│  entrypoint-controller.sh                                                  │
-│    ├── Xvfb :99                    virtual display for Chrome              │
-│    └── uvicorn main:app --workers 1                                        │
-│          ├── FastAPI + static SPA          :8080                           │
-│          ├── APScheduler                   cron-triggered suite runs       │
-│          └── asyncio executor  ──▶ python -m robot  ──▶ Chrome             │
-│                                     (N in parallel, see Sizing)            │
-│                                                                            │
-│  /opt/rf/config   ← PVC   SQLite database (WAL)                            │
-│  /opt/rf/suites   ← PVC   .robot scripts, git-synced                       │
-│  /opt/rf/results  ← PVC   output.xml, log.html, report.html, screenshots   │
-└────────────────────────────────────────────────────────────────────────────┘
+```text
+Controller pod (one replica, one Uvicorn worker)
+  UI/API :8080, SQLite, schedules, fair admission and result collection
+  PVCs: /opt/rf/config, /opt/rf/suites, /opt/rf/results
+        |
+        | authenticated HTTP: frozen sources, profile snapshot, job status
+        v
+Dedicated project runner pod (one replica per project)
+  entrypoint-runner.sh -> Xvfb + runner_worker:app :8090
+  Robot + Chrome jobs (bounded concurrency)
+  Temporary /tmp and /dev/shm; returns artifacts to the controller
 ```
 
 **`--workers 1` is load-bearing.** Run state, the execution semaphores and the scheduler live in
 process memory. A second worker would each keep its own copy, so the concurrency caps would be
 silently doubled and queued runs would be invisible to the other worker. Scale by raising the
-pod's CPU/memory and the concurrency settings, **not** by adding workers or replicas.
+runner pod's CPU/memory and the controller/runner concurrency settings, **not** by adding workers or replicas.
 
 For the same reason the Deployment is `replicas: 1`. Two replicas would both mount the same
 SQLite file and both run the scheduler — every scheduled suite would fire twice.
@@ -141,13 +138,15 @@ SQLite file and both run the scheduler — every scheduled suite would fire twic
 ## Deploying to Kubernetes
 
 BRACE supports a controller pod and a separate runner pod using the same image.
-The manifests currently in `k8s/deployment.yaml` describe the controller with
-local execution; they do **not** create isolated runners or enable autoscaling.
+`k8s/deployment.yaml` configures the controller for remote execution, and
+`k8s/runner.yaml` creates a dedicated project-1 runner and internal Service.
+Replica autoscaling is not supported.
 See [isolated runners and scaling limits](#isolated-runners-and-scaling-limits)
 below before adapting those manifests for remote execution.
 
 Examples use `kubectl`. On OpenShift, `oc` is a drop-in replacement for every
-command shown, and `k8s/deployment.yaml` includes a `Route` alongside the Service.
+command shown. Apply `k8s/route.yaml` separately for OpenShift; standard
+Kubernetes users can port-forward or configure an Ingress.
 
 ### 1. Build and push the image
 
@@ -178,44 +177,56 @@ Nothing starts without it — deliberately, so the platform fails closed rather 
 to a default signing key.
 
 ```bash
-./k8s/gen-secret.sh > /tmp/brace-secret.yaml
+kubectl create namespace brace --dry-run=client -o yaml | kubectl apply -f -
+bash k8s/gen-secret.sh > /tmp/brace-secret.yaml
 kubectl apply -f /tmp/brace-secret.yaml
 shred -u /tmp/brace-secret.yaml
 ```
 
 The script prints the generated **admin password to stderr — save it, it is stored nowhere else.**
 It generates a random `JWT_SECRET` and a valid Fernet `BRACE_ENCRYPT_KEY`, and refuses to emit a
-malformed encryption key. Pass `RMQ_PASSWORD=…` if you use the agent1 RCA listener.
+malformed encryption key. The generator also creates a dedicated project-1 worker token Secret and its
+matching controller endpoint-map Secret. Preserve existing Secrets during upgrades.
 
-To avoid writing secrets to disk at all, use the `oc create secret generic` form in
-[`k8s/secret.template.yaml`](k8s/secret.template.yaml).
+To avoid temporary Secret files, pipe the generator directly to
+`kubectl apply -f -`. The imperative controller-only example in
+[`k8s/secret.template.yaml`](k8s/secret.template.yaml) must be supplemented with
+the worker-token and controller endpoint-map Secrets.
 
 ### 3. Apply the rest
 
 ```bash
 kubectl apply -f k8s/supporting.yaml   # PVCs: suites 2Gi, results 2Gi, config 512Mi
-kubectl apply -f k8s/deployment.yaml   # Deployment + Service + Route
+kubectl apply -f k8s/network-policy.yaml # Runner ingress and DNS-only egress
+kubectl apply -f k8s/runner.yaml       # Project-1 runner Deployment + Service
+kubectl apply -f k8s/deployment.yaml   # Controller Deployment + Service
 
-# Optional — only if you run the agent1 RCA listener:
-kubectl apply -f k8s/config.yaml       # ConfigMap: RabbitMQ settings
+# Optional: OpenShift only
+# oc apply -f k8s/route.yaml
+
+# Standard Kubernetes local access
+# kubectl -n brace port-forward service/brace-rf-controller 8080:8080
 ```
 
 The Secret must exist first: `JWT_SECRET` and `BRACE_ENCRYPT_KEY` are declared as **required**
-keys, so the pod will not start without them. Everything RabbitMQ-related is optional — the
-controller never reads it, and the pod starts whether or not `brace-config` exists.
+keys, so the pod will not start without them. The generated runner-token and endpoint Secrets are also required. NetworkPolicy
+allows runner DNS but blocks test-target egress until approved destinations are
+configured; see [the Kubernetes deployment guide](k8s/README.md).
 
 ### 4. Verify
 
 ```bash
-kubectl rollout status deployment/brace-rf-controller
-kubectl get route brace-rf-dashboard -o jsonpath='{.spec.host}{"\n"}'
-kubectl logs deployment/brace-rf-controller | head -30
+kubectl -n brace rollout status deployment/brace-runner-project-1
+kubectl -n brace rollout status deployment/brace-rf-controller
+# OpenShift only, after applying route.yaml:
+# oc -n brace get route brace-rf-dashboard -o jsonpath='{.spec.host}{"\n"}'
+kubectl -n brace logs deployment/brace-rf-controller | head -30
 ```
 
 A healthy start logs its effective configuration:
 
 ```
-BRACE v2 started — env=staging tag=2.2.1 version=2.2.1 max_concurrent_runs=3
+BRACE v2 started — env=production tag=2.2.1 version=2.2.1 max_concurrent_runs=3
 max_concurrent_tests=3 run_parallel=3 test_timeout=1800s scheduler_tz=Asia/Kolkata
 container_tz=Asia/Kolkata local_time=2026-08-19 08:12:03 retention=90d (keep min 20/project)
 ```
@@ -281,8 +292,9 @@ ports:
   - containerPort: 8090
 ```
 
-These are container configuration fragments, not complete manifests. Add a
-Deployment and matching Service per project. Give runners CPU/memory limits,
+These are explanatory fragments; complete project-1 manifests are provided in
+`k8s/runner.yaml` and `k8s/deployment.yaml`. Add a Deployment and matching Service
+for each additional project. Give runners CPU/memory limits,
 a read-only root filesystem, a writable `emptyDir` at `/tmp`, and a memory-backed
 `emptyDir` at `/dev/shm`. Run non-root, drop capabilities and disable privilege
 escalation. Do not mount controller PVCs, controller credentials or the Docker
@@ -324,8 +336,8 @@ and [Docker Compose example](docker-compose.isolated.yml) for the isolation boun
 |---|---|
 | `JWT_SECRET` | Signs login tokens. Anyone who knows it can forge a session as **any** user, including admin. 32+ random bytes. Rotating it logs everyone out. |
 | `BRACE_ENCRYPT_KEY` | Fernet key encrypting git tokens, the AI API key and the SMTP password at rest. Must be url-safe base64 of exactly 32 bytes. **Rotating it makes existing git tokens undecryptable** — re-enter them per project afterwards. |
-| `BRACE_ADMIN_PASSWORD` | Optional. Seeds the bootstrap `admin` password on a **fresh database only**. Omit and the account is created as `admin`/`admin` with a forced change at first login. |
-| `RMQ_PASSWORD` | Optional. Only used by the agent1 RCA listener, which the controller does not run — omit it unless you deploy that listener. |
+| `BRACE_ADMIN_PASSWORD` | Required by the production manifest. Seeds the bootstrap `admin` password on a **fresh database only**; later changes do not reset existing accounts. |
+
 
 A missing or malformed `BRACE_ENCRYPT_KEY` prevents production startup. Local/dev
 environments may continue with a warning; never use that bypass in production.
@@ -365,16 +377,16 @@ the number of browsers does. Two independent limits:
 
 - `BRACE_MAX_CONCURRENT_RUNS` — queueing fairness. Cheap; tune freely.
 - `BRACE_MAX_CONCURRENT_TESTS` — **physical.** Every unit is a Chrome + chromedriver + robot
-  process. Exceed what the pod can hold and it is OOM-killed, losing every in-flight run rather
+  process. Exceed what the runner pod can hold and it is OOM-killed, losing every in-flight run rather
   than just the excess.
 
-| Pod resources | `MAX_CONCURRENT_TESTS` | `/dev/shm` |
+| Runner pod resources | `MAX_CONCURRENT_TESTS` | `/dev/shm` |
 |---|---|---|
 | 2 CPU / 4 Gi | 3 *(current)* | 512 Mi |
 | 4 CPU / 8 Gi | 6 | 1 Gi |
 | 8 CPU / 16 Gi | 12 | 2 Gi |
 
-Raise the env var and `resources.limits` **together, in the same change**. Chrome also needs
+Raise controller concurrency, worker capacity and worker `resources.limits` **together, in the same change**. Chrome also needs
 shared memory: past roughly 6 concurrent browsers, raise the `dshm` volume's `sizeLimit` too, or
 Chrome crashes in confusing ways rather than failing cleanly.
 
@@ -866,9 +878,12 @@ controller/              FastAPI backend + SPA
     brace_capture.py     Robot listener — captures the page at locator failure
   static/                index.html + css/ + js/ (no build step)
 k8s/
-  deployment.yaml        Deployment + Service + Route
+  deployment.yaml        Remote controller Deployment + Service
+  runner.yaml            Dedicated project-1 runner Deployment + Service
+  route.yaml             Optional OpenShift Route
+  network-policy.yaml    Runner ingress and DNS-only egress
+  README.md              Deployment, permissions and target-network setup
   supporting.yaml        PersistentVolumeClaims
-  config.yaml            ConfigMap (RabbitMQ, agent1 only)
   secret.template.yaml   Secret template — never commit a filled copy
   gen-secret.sh          Generates a ready-to-apply Secret
 Dockerfile.optimized     Production build (UBI9 → ubi9-micro)

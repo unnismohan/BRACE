@@ -1,38 +1,37 @@
 # ═══════════════════════════════════════════════════════════════
-# BRACE — Supporting OpenShift Manifests
+# BRACE — Controller storage manifests
 # Apply once: oc apply -f k8s/supporting.yaml
 # Namespace: brace (existing)
 # ═══════════════════════════════════════════════════════════════
 
 # ── PVC: RF Suites ───────────────────────────────────────────
 # Stores Robot Framework .robot files + test data
-# RWX so sync pod and Job pod can both mount
+# Only the controller mounts this volume; runner receives frozen source archives.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: brace-rf-suites-pvc
   namespace: brace
 spec:
-  storageClassName: standard
+  # Use the cluster default StorageClass, or set a compatible class explicitly.
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   resources:
     requests:
       storage: 2Gi
 
 ---
 # ── PVC: RF Results ──────────────────────────────────────────
-# Job writes output.xml + report.html here per run-id subdir
-# Agent 1 reads from here after Job completes
+# Controller stores artifacts downloaded from remote workers here.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: brace-rf-results-pvc
   namespace: brace
 spec:
-  storageClassName: standard
+  # Use the cluster default StorageClass, or set a compatible class explicitly.
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   resources:
     requests:
       storage: 2Gi
@@ -46,7 +45,7 @@ metadata:
   name: brace-rf-config-pvc
   namespace: brace
 spec:
-  storageClassName: standard
+  # Use the cluster default StorageClass, or set a compatible class explicitly.
   accessModes:
     - ReadWriteOnce
   resources:
