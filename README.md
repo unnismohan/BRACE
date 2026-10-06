@@ -140,6 +140,12 @@ SQLite file and both run the scheduler — every scheduled suite would fire twic
 
 ## Deploying to Kubernetes
 
+BRACE supports a controller pod and a separate runner pod using the same image.
+The manifests currently in `k8s/deployment.yaml` describe the controller with
+local execution; they do **not** create isolated runners or enable autoscaling.
+See [isolated runners and scaling limits](#isolated-runners-and-scaling-limits)
+below before adapting those manifests for remote execution.
+
 Examples use `kubectl`. On OpenShift, `oc` is a drop-in replacement for every
 command shown, and `k8s/deployment.yaml` includes a `Route` alongside the Service.
 
@@ -219,6 +225,96 @@ apply. In particular **`local_time` must match your own watch**: if it does not,
 every timestamp in the UI will be offset by the same amount.
 
 ---
+
+### Isolated runners and scaling limits
+
+Use **one controller Deployment with one replica** and **one runner Deployment
+with one replica per project**. Keep the controller's `Recreate` strategy and
+single Uvicorn worker. Both Deployments use the same image but different
+entrypoints; image layers are shared on each node where the image is cached.
+
+| Component | Responsibilities | Storage and network |
+| --- | --- | --- |
+| Controller | UI/API, SQLite, scheduling, fair admission, collecting results | Config, scripts and results PVCs; Service on 8080, exposed through Ingress/Route |
+| Project runner | Robot and Chrome execution for its assigned project | Writable temporary work directory and `/dev/shm`; internal ClusterIP Service on 8090 |
+
+Set the controller environment as follows, replacing project ID `1`, the Service
+name and namespace with your deployment values:
+
+```yaml
+- name: BRACE_RUNNER_MODE
+  value: remote
+- name: BRACE_REQUIRE_ISOLATION
+  value: "true"
+- name: BRACE_RUNNER_ENDPOINTS
+  valueFrom:
+    secretKeyRef:
+      name: brace-runner-endpoints
+      key: endpoints
+```
+
+The Secret's `endpoints` value is a JSON object:
+
+```json
+{"1":{"url":"http://brace-runner-project-1.brace.svc.cluster.local:8090","token":"<random-token-at-least-32-characters>"}}
+```
+
+Generate real credentials outside Git. Keep the controller's JWT, encryption
+key and bootstrap password in its existing Secret. Each runner gets only its
+own matching token and project ID:
+
+```yaml
+command: ["/bin/bash", "/opt/rf/controller/entrypoint-runner.sh"]
+env:
+  - name: BRACE_RUNNER_PROJECT_ID
+    value: "1"
+  - name: BRACE_RUNNER_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: brace-runner-project-1
+        key: token
+  - name: BRACE_RUNNER_CAPACITY
+    value: "3"
+  - name: BRACE_RUNNER_WORK_DIR
+    value: /tmp
+ports:
+  - containerPort: 8090
+```
+
+These are container configuration fragments, not complete manifests. Add a
+Deployment and matching Service per project. Give runners CPU/memory limits,
+a read-only root filesystem, a writable `emptyDir` at `/tmp`, and a memory-backed
+`emptyDir` at `/dev/shm`. Run non-root, drop capabilities and disable privilege
+escalation. Do not mount controller PVCs, controller credentials or the Docker
+socket into runners. Use NetworkPolicies to permit controller-to-runner traffic
+and runner DNS/access to approved test targets. A network-isolated runner cannot
+reach an external website unless the deployment explicitly allows it.
+
+**Concurrency is supported; replica autoscaling is not supported yet.**
+`BRACE_RUNNER_CAPACITY` controls simultaneous Robot jobs inside each runner pod.
+The controller also enforces `BRACE_MAX_CONCURRENT_RUNS`,
+`BRACE_MAX_CONCURRENT_TESTS` and `BRACE_RUN_PARALLEL`. Increasing only the runner
+capacity does not bypass those limits; size all limits to available resources.
+
+Do not put multiple runner replicas behind one Service or add an HPA/KEDA scaler
+to the current runner. Jobs live in the pod's memory and temporary filesystem;
+polling, artifact retrieval or cancellation could reach a pod that does not own
+the job. Pod restarts lose that job state. For upgrades, wait for active runs to
+finish and avoid overlapping runner replicas with a `Recreate` strategy.
+
+To support one controller with load-scaled worker pools, further implementation
+is required: a durable queue and shared job state, atomic job claiming,
+shared artifact storage, heartbeats and recovery, graceful worker draining, and
+queue-depth autoscaling metrics. Preserve project isolation with a separate
+worker pool per project. These are planned architecture requirements, not
+features currently provided by this repository.
+
+For trusted local testing, a single container can execute tests with
+`BRACE_RUNNER_MODE=local` and `BRACE_REQUIRE_ISOLATION=false`, with no endpoint map
+or separate runner service. This gives scripts access to the controller container's
+files and credentials. Remote mode never falls back to local execution if a
+project endpoint is missing. See [the execution guide](docs/execution-and-modules.md)
+and [Docker Compose example](docker-compose.isolated.yml) for the isolation boundaries.
 
 ## Configuration reference
 

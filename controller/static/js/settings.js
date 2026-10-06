@@ -68,6 +68,25 @@ const R = { v:'<span class="help-role v">Viewer</span>',
             sa:'<span class="help-role sa">System Admin</span>' };
 
 const HELP_SECTIONS = [
+{ id:'deployment', title:'Runners & Deployment', body:`
+  <p>BRACE can run the controller and test runner in separate Docker containers or Kubernetes pods. They use the same image with different entrypoints.</p>
+  <h4>What each component does</h4>
+  <table><thead><tr><th>Component</th><th>Purpose</th></tr></thead><tbody>
+    <tr><td>Controller</td><td>Serves the UI/API, stores project data and results, schedules runs and shares available run slots fairly.</td></tr>
+    <tr><td>Project runner</td><td>Executes Robot and Chrome for its assigned project. Its internal service is not exposed through the public UI.</td></tr>
+  </tbody></table>
+  <h4>Current Kubernetes setup</h4>
+  <p>Use one controller replica and one runner replica per project. Project runners do not receive the controller's database, storage volumes or credentials. Administrators configure matching project IDs, runner tokens and internal service endpoints. The repository's existing Kubernetes controller manifest does not create these separate runners; deployment configuration must be adapted as described in the README.</p>
+  <h4>Concurrency and scaling</h4>
+  <p>One runner pod can execute several tests concurrently. Administrators set <code>BRACE_RUNNER_CAPACITY</code> and the controller's run/test concurrency limits to match CPU and memory resources. A queued run waits for available capacity; it does not automatically create another runner pod.</p>
+  <p><b>Multiple runner replicas behind one Service and automatic pod scaling are not supported yet.</b> Jobs and temporary artifacts belong to the runner that started them, so another replica cannot serve their status or cancellation requests. A scalable worker pool needs a durable queue, shared state/artifacts, recovery and graceful draining before HPA or KEDA can be enabled safely.</p>
+  <h4>Network failures</h4>
+  <p>Chrome errors such as <code>ERR_NAME_NOT_RESOLVED</code> mean the target hostname could not be resolved. In Runs → Details, expand the failed test with ▸ and read Suggested next check below Attempt history. Ask your administrator to check the target URL, runner DNS and network policy. Isolated runners need explicit access to approved external test targets.</p>
+  <h4>Restarts and maintenance</h4>
+  <p>Runner job state is not durable across pod restarts. Let active tests finish before restarting or replacing runners, then re-run interrupted work. Do not increase replica counts as a workaround for a busy queue.</p>
+  <h4>Single-container local testing</h4>
+  <p>Trusted local scripts can run inside the controller with <code>BRACE_RUNNER_MODE=local</code> and <code>BRACE_REQUIRE_ISOLATION=false</code>. This is simpler but gives scripts access to the controller's files and credentials. Separate project runners provide a stronger isolation boundary.</p>
+`},
 { id:'operations', title:'Profiles, Retries & Quarantine', body:`
   <p>Overview shows project coverage, queues, recent failures, upcoming schedules and passes after retry.</p>
   <h4>Environment profiles</h4><p>Project administrators configure profiles in Settings → General. Select a profile in the Run dialog. Variables are passed to Robot; secret values are encrypted and reads show only their names. Editing keeps secrets unless their names are entered in Secret names to remove. Use testing credentials: scripts can read and print selected secrets.</p>
